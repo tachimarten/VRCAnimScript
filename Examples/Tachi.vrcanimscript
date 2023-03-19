@@ -1,0 +1,142 @@
+# Tachi.vrcanimscript
+#
+# This is a VRC animation script. It lets you create VRChat parameters, menus, animation
+# controllers, and simple animations in one compact text file.
+#
+# Whitespace (including newlines) is insignificant in this file, and comments begin with `#`.
+# Indent as you please. Strings are delimited with double quotes; in most cases you can leave off
+# the double quotes if the string is just one word (alphanumeric characters plus underscore).
+
+# Name of your avatar. This can be any valid identifier (no spaces) and is only used for internal
+# names.
+avatar Tachi
+
+# The Unity name of your root object. This is the one containing the avatar descriptor.
+rootobject "jacob-ovrick-tachi-ik (1)"
+
+# Declare your parameters here. Right now only booleans are supported. The syntax is:
+#
+#   saved? param NAME: TYPE = EXPRESSION
+saved param Wrench: bool = false
+saved param FloatAndSplat: bool = false
+saved param Geddan: bool = false
+saved param Pants: bool = true
+saved param LifeBarIn: bool = false
+
+# Declare your menu items here. Right now only one level of toggles are supported.
+menuitem Wrench
+    icon item_sword
+    toggle Wrench
+menuitem "ゲッダン"
+    icon person_dance
+    toggle Geddan
+menuitem "Float & Splat"
+    icon hand_waving
+    toggle FloatAndSplat
+menuitem Pants
+    icon symbol_heart
+    toggle Pants
+menuitem "Show Life Bar"
+    icon symbol_heart
+    toggle LifeBarIn
+
+# Your action controller goes here.
+#
+# VRC playable layer control and VRC animator tracking control behaviors are automatically added
+# as necessary.
+controller action
+    # An animation layer.
+    layer Action
+        # There must be one initial state. The names don't matter; they're only used for
+        # identification.
+        initial state Idle
+            # These are transitions with conditions.
+            goto Geddan if Geddan
+            goto FloatAndSplat if FloatAndSplat
+        state Geddan
+            # `play` plays a `.anim` asset. In this case, `BaileGETDOWN.anim`.
+            play BaileGETDOWN
+            # Negation of booleans can be done with `!`. This one goes to Idle if Geddan is false.
+            goto Idle if !Geddan
+        state FloatAndSplat
+            play "Float & Splat"
+            goto Idle if !FloatAndSplat
+
+# Your FX controller goes here.
+controller fx
+    layer Wrench
+        initial state WrenchOff
+            # `do` specifies an "inline animation". These are simple one-off animations that
+            # VRCAnimScript automatically generates as necessary. They're useful when you don't
+            # want to bother making a whole `.anim` file in Unity.
+            do
+                # The syntax here is
+                #
+                #    GAMEOBJECT::COMPONENT.PROPERTY = EXPRESSION
+                #
+                # * GAMEOBJECT is the Unity name of the game object, as a string. It can be
+                #   anywhere in the hierarchy below your root object.
+                # * COMPONENT is the type of the component to be animated as a string, such as
+                #   Transform or SkinnedMeshRenderer.
+                # * PROPERTY is the path of the property to be animated on the component. For
+                #   example, `blendShape.MyBlendShape`.
+                # * EXPRESSION is the value to animate to.
+                #
+                # Valid expressions include numbers (ints and floats are internally the same thing)
+                # and 2/3/4-element vectors, notated as `vecN(NUMBER, NUMBER, ...)`. Internally,
+                # vectors turn into multiple float properties, one for each element of the vector.
+                # For example, `Wrench::Transform.m_LocalScale = vec3(0, 0, 0)` is the same as:
+                #
+                #   Wrench::Transform.m_LocalScale.x = 0
+                #   Wrench::Transform.m_LocalScale.y = 0
+                #   Wrench::Transform.m_LocalScale.z = 0
+                Wrench::Transform.m_LocalScale = vec3(0, 0, 0)
+            goto WrenchOn if Wrench
+        state WrenchOn
+            do
+                Wrench::Transform.m_LocalScale = vec3(1, 1, 1)
+            goto WrenchOff if !Wrench
+
+    layer Pants
+        initial state PantsOn
+            do
+                Body::SkinnedMeshRenderer.blendShape.NoPants = 0
+                Body::SkinnedMeshRenderer.blendShape.CorrectionPelvisClip = 100
+            goto PantsOff if !Pants
+        state PantsOff
+            do
+                Body::SkinnedMeshRenderer.blendShape.NoPants = 100
+                Body::SkinnedMeshRenderer.blendShape.CorrectionPelvisClip = 0
+            goto PantsOn if Pants
+
+    layer LifeBar
+        initial state LifeBarIn
+            # Inline animations can have multiple frames. Start each frame with `at time SECONDS`,
+            # where SECONDS is in (possibly fractional) seconds.
+            do
+                at time 0
+                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
+                    HUD::MeshRenderer.material._OverlayTransparent = 0
+                at time 0.3
+                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
+                    HUD::MeshRenderer.material._OverlayTransparent = 1
+            # This is a time-based transition. It'll happen after the number of seconds specified.
+            goto LifeBarOut at time 16.6667
+        state LifeBarOut
+            do
+                at time 0
+                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
+                    HUD::MeshRenderer.material._OverlayTransparent = 1
+                at time 0.3
+                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
+                    HUD::MeshRenderer.material._OverlayTransparent = 0
+            goto LifeBarIn at time 1000
+
+    layer EnableHUD
+        initial state HUDOff
+            do
+                HUD::Transform.m_IsActive = 0
+            goto HUDOn if IsLocal
+        state HUDOn
+            do
+                HUD::Transform.m_IsActive = 1
