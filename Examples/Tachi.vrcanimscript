@@ -109,34 +109,36 @@ controller fx
                 Body::SkinnedMeshRenderer.blendShape.CorrectionPelvisClip = 0
             goto PantsOn if Pants
 
-    layer LifeBar
-        initial state LifeBarIn
-            # Inline animations can have multiple frames. Start each frame with `at time SECONDS`,
-            # where SECONDS is in (possibly fractional) seconds.
-            do
-                at time 0
-                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
-                    HUD::MeshRenderer.material._OverlayTransparent = 0
-                at time 0.3
-                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
-                    HUD::MeshRenderer.material._OverlayTransparent = 1
-            # This is a time-based transition. It'll happen after the number of seconds specified.
-            goto LifeBarOut at time 16.6667
-        state LifeBarOut
-            do
-                at time 0
-                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
-                    HUD::MeshRenderer.material._OverlayTransparent = 1
-                at time 0.3
-                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
-                    HUD::MeshRenderer.material._OverlayTransparent = 0
-            goto LifeBarIn at time 1000
+    
 
-    layer EnableHUD
-        initial state HUDOff
-            do
-                HUD::Transform.m_IsActive = 0
-            goto HUDOn if IsLocal
-        state HUDOn
-            do
-                HUD::Transform.m_IsActive = 1
+#    layer LifeBar
+#        initial state LifeBarIn
+#            # Inline animations can have multiple frames. Start each frame with `at time SECONDS`,
+#            # where SECONDS is in (possibly fractional) seconds.
+#            do
+#                at time 0
+#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
+#                    HUD::MeshRenderer.material._OverlayTransparent = 0
+#                at time 0.3
+#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
+#                    HUD::MeshRenderer.material._OverlayTransparent = 1
+#            # This is a time-based transition. It'll happen after the number of seconds specified.
+#            goto LifeBarOut at time 16.6667
+#        state LifeBarOut
+#            do
+#                at time 0
+#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
+#                    HUD::MeshRenderer.material._OverlayTransparent = 1
+#                at time 0.3
+#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
+#                    HUD::MeshRenderer.material._OverlayTransparent = 0
+#            goto LifeBarIn at time 1000
+#
+#    layer EnableHUD
+#        initial state HUDOff
+#            do
+#                HUD::Transform.m_IsActive = 0
+#            goto HUDOn if IsLocal
+#        state HUDOn
+#            do
+#                HUD::Transform.m_IsActive = 1
