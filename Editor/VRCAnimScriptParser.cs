@@ -210,7 +210,7 @@ namespace VRCAnimScript {
             if (!ConsumeKeyword("do"))
                 return null;
 
-            bool singleFrame = LookaheadIsDotOrDoubleColon();
+            bool singleFrame = FrameActionIsNext();
 
             InlineAnimation animation = new InlineAnimation();
             var frames = new List<Frame>();
@@ -249,7 +249,7 @@ namespace VRCAnimScript {
         }
 
         FrameAction ParseAction() {
-            if (!LookaheadIsDotOrDoubleColon())
+            if (!FrameActionIsNext())
                 return null;
 
             FrameAction action = new FrameAction();
@@ -261,12 +261,13 @@ namespace VRCAnimScript {
             string component = doubleColonDelimited[doubleColonDelimited.Count - 1];
             doubleColonDelimited.RemoveAt(doubleColonDelimited.Count - 1);
 
-            var propertyName = new List<string>();
-            while (ConsumePunctuation("."))
-                propertyName.Add(ExpectMaybeQuotedString());
+            var propertyComponents = new List<PropertyComponent>();
+            PropertyComponent propertyComponent;
+            while ((propertyComponent = ParsePropertyComponent()) != null)
+                propertyComponents.Add(propertyComponent);
 
-            action.propertyName = propertyName.ToArray();
-            action.propertyPath = doubleColonDelimited.ToArray();
+            action.property = propertyComponents.ToArray();
+            action.objectPath = doubleColonDelimited.ToArray();
             action.component = component;
 
             ExpectPunctuation("=");
@@ -275,11 +276,39 @@ namespace VRCAnimScript {
             return action;
         }
 
+        PropertyComponent ParsePropertyComponent() {
+            PropertyComponent propertyComponent;
+            if ((propertyComponent = ParseNamePropertyComponent()) != null)
+                return propertyComponent;
+            if ((propertyComponent = ParseNumberPropertyComponent()) != null)
+                return propertyComponent;
+            return null;
+        }
+
+        NamePropertyComponent ParseNamePropertyComponent() {
+            if (!ConsumePunctuation("."))
+                return null;
+            var namePropertyComponent = new NamePropertyComponent();
+            namePropertyComponent.name = ExpectMaybeQuotedString();
+            return namePropertyComponent;
+        }
+
+        NumberPropertyComponent ParseNumberPropertyComponent() {
+            if (!ConsumePunctuation("["))
+                return null;
+            var numberPropertyComponent = new NumberPropertyComponent();
+            numberPropertyComponent.value = ExpectIntLiteral();
+            ExpectPunctuation("]");
+            return numberPropertyComponent;
+        }
+
         Expression ParseExpression() {
             Expression expression;
             if ((expression = ParseIntExpression()) != null)
                 return expression;
             if ((expression = ParseVectorLiteralExpression()) != null)
+                return expression;
+            if ((expression = ParseAssetExpression()) != null)
                 return expression;
             return null;
         }
@@ -314,6 +343,20 @@ namespace VRCAnimScript {
             VectorLiteralExpression expression = new VectorLiteralExpression();
             expression.elements = values;
             return expression;
+        }
+
+        AssetExpression ParseAssetExpression() {
+            if (!PunctuationIsNext("("))
+                return null;
+            if (!(lookaheadToken is KeywordToken) && !(lookaheadToken is StringLiteralToken))
+                return null;
+
+            var assetExpression = new AssetExpression();
+            ExpectPunctuation("(");
+            assetExpression.type = ExpectMaybeQuotedString();
+            ExpectPunctuation(")");
+            assetExpression.name = ExpectMaybeQuotedString();
+            return assetExpression;
         }
 
         StateTransition ParseStateTransition() {
@@ -393,8 +436,12 @@ namespace VRCAnimScript {
             return false;
         }
 
+        private bool PunctuationIsNext(string punct) {
+            return nextToken is PunctuationToken && ((PunctuationToken)nextToken).Value == punct;
+        }
+
         private bool ConsumePunctuation(string punct) {
-            if (nextToken is PunctuationToken && ((PunctuationToken)nextToken).Value == punct) {
+            if (PunctuationIsNext(punct)) {
                 GetToken();
                 return true;
             }
@@ -432,11 +479,12 @@ namespace VRCAnimScript {
             return value;
         }
 
-        private bool LookaheadIsDotOrDoubleColon() {
+        private bool FrameActionIsNext() {
             if (!(lookaheadToken is PunctuationToken))
                 return false;
             var punctuation = (PunctuationToken)lookaheadToken;
-            return punctuation.Value == "." || punctuation.Value == "::";
+            return punctuation.Value == "." || punctuation.Value == "::" ||
+                punctuation.Value == "[";
         }
     }
 
@@ -509,10 +557,20 @@ namespace VRCAnimScript {
         }
 
         public class FrameAction {
-            public string[] propertyPath;
+            public string[] objectPath;
             public string component;
-            public string[] propertyName;
+            public PropertyComponent[] property;
             public Expression expression;
+        }
+
+        public abstract class PropertyComponent { }
+
+        public class NamePropertyComponent : PropertyComponent {
+            public string name;
+        }
+
+        public class NumberPropertyComponent : PropertyComponent {
+            public int value;
         }
 
         public abstract class Expression { }
@@ -523,6 +581,11 @@ namespace VRCAnimScript {
 
         public class VectorLiteralExpression : Expression {
             public double[] elements;
+        }
+
+        public class AssetExpression : Expression {
+            public string type;
+            public string name;
         }
 
         public class StateTransition {
@@ -629,7 +692,7 @@ namespace VRCAnimScript {
                     return new PunctuationToken(token);
                 }
 
-                if ("=!*,-.()".Contains("" + c)) {
+                if ("=!*,-.()[]".Contains("" + c)) {
                     token += c;
                     reader.Read();
                     return new PunctuationToken(token);

@@ -20,6 +20,14 @@ namespace VRCAnimScript {
         }
     }
 
+    class ObjectReferenceKeyframeComparer : IComparer {
+        int IComparer.Compare(object lhs, object rhs) {
+            float x = ((ObjectReferenceKeyframe)lhs).time;
+            float y = ((ObjectReferenceKeyframe)rhs).time;
+            return x < y ? -1 : x > y ? 1 : 0;
+        }
+    }
+
     class Materializer {
         Ast.Root root;
 
@@ -70,6 +78,22 @@ namespace VRCAnimScript {
             return root.avatar + "Gen" + suffix;
         }
 
+        private static string BaseNameOfType(Type type) {
+            string fullName = type.FullName;
+            return fullName.Substring(fullName.LastIndexOf('.') + 1);
+        }
+
+        private string GetAssetPath<T>(string name) {
+            string query = DoubleQuote(name) + " t:" + BaseNameOfType(typeof(T));
+            string[] guids = AssetDatabase.FindAssets(query);
+            foreach (string guid in guids) {
+                string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                if (GetBaseName(assetPath).Equals(name))
+                    return assetPath;
+            }
+            return null;
+        }
+
         public void Materialize() {
             string paramsAssetPath = MaterializeParams();
             string mainMenuAssetPath = MaterializeMenu();
@@ -114,14 +138,11 @@ namespace VRCAnimScript {
                 var vrcMenuItem = new VRCExpressionsMenu.Control();
                 vrcMenuItem.name = menuItem.name;
 
-                string[] texturePaths = AssetDatabase.FindAssets(
-                    DoubleQuote(menuItem.icon) + " t:Texture2D");
-                if (texturePaths.Length == 0) {
+                string texturePath = GetAssetPath<Texture2D>(menuItem.icon);
+                if (texturePath == null)
                     Debug.LogWarning("Couldn't find menu item texture " + vrcMenuItem.icon);
-                } else {
-                    vrcMenuItem.icon = AssetDatabase.LoadAssetAtPath<Texture2D>(
-                        AssetDatabase.GUIDToAssetPath(texturePaths[0]));
-                }
+                else
+                    vrcMenuItem.icon = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
 
                 vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.Toggle;
                 vrcMenuItem.parameter = new VRCExpressionsMenu.Control.Parameter();
@@ -206,24 +227,11 @@ namespace VRCAnimScript {
                                 state.name);
                         } else if (state.animation is Ast.ExternalAnimation) {
                             var external = (Ast.ExternalAnimation)state.animation;
-                            string query = DoubleQuote(external.name) + " t:AnimationClip";
-
-                            string[] animationClips = AssetDatabase.FindAssets(query);
-                            foreach (string animationClip in animationClips) {
-                                string thisPath = AssetDatabase.GUIDToAssetPath(animationClip);
-                                if (GetBaseName(thisPath).Equals(external.name)) {
-                                    animationPath = thisPath;
-                                    break;
-                                }
-                            }
+                            animationPath = GetAssetPath<AnimationClip>(external.name);
 
                             if (animationPath == null) {
                                 string errorMessage = "Couldn't find external animation clip " +
                                     external;
-                                if (animationClips.Length > 0) {
-                                    errorMessage += " from candidates " +
-                                        String.Join(", ", animationClips);
-                                }
                                 Debug.LogWarning(errorMessage);
                             }
                         } else {
@@ -328,20 +336,41 @@ namespace VRCAnimScript {
             throw new Exception("Unhandled expression type");
         }
 
+        private string PropertyToString(Ast.PropertyComponent[] propertyComponents) {
+            string result = "";
+            for (int i = 0; i < propertyComponents.Length; i++) {
+                Ast.PropertyComponent propertyComponent = propertyComponents[i];
+                if (propertyComponent is Ast.NumberPropertyComponent) {
+                    // Automatically add `.Array.data`.
+                    result += ".Array.data[" +
+                        ((Ast.NumberPropertyComponent)propertyComponent).value + "]";
+                } else if (propertyComponent is Ast.NamePropertyComponent) {
+                    if (i > 0)
+                        result += ".";
+                    result += ((Ast.NamePropertyComponent)propertyComponent).name;
+                } else {
+                    throw new Exception("Unhandled property component type");
+                }
+            }
+            return result;
+        }
+
         private string MaterializeInlineAnimation(
                 Ast.InlineAnimation animation,
                 string controllerName,
                 string layerName,
                 string stateName) {
             AnimationClip unityAnimation = new AnimationClip();
-            var unityCurves = new Dictionary<EditorCurveBinding, List<Keyframe>>();
+            var unityFloatCurves = new Dictionary<EditorCurveBinding, List<Keyframe>>();
+            var unityObjectReferenceCurves =
+                new Dictionary<EditorCurveBinding, List<ObjectReferenceKeyframe>>();
 
             for (int frameIndex = 0; frameIndex < animation.frames.Length; frameIndex++) {
                 Ast.Frame frame = animation.frames[frameIndex];
                 for (int actionIndex = 0; actionIndex < frame.actions.Length; actionIndex++) {
                     Ast.FrameAction frameAction = frame.actions[actionIndex];
 
-                    string query = frameAction.propertyPath[0];
+                    string query = frameAction.objectPath[0];
 
                     GameObject gameObject = GameObject.Find(query);
                     if (gameObject == null) {
@@ -356,38 +385,86 @@ namespace VRCAnimScript {
                     } else {
                         Component[] allComponents = gameObject.GetComponents<Component>();
                         foreach (Component component in allComponents) {
-                            string fullName = component.GetType().FullName;
-                            string baseName = fullName.Substring(fullName.LastIndexOf('.') + 1);
-                            if (baseName.Equals(frameAction.component)) {
+                            if (BaseNameOfType(component.GetType()).Equals(frameAction.component)) {
                                 componentType = component.GetType();
                                 break;
                             }
                         }
                     }
                     if (componentType == null) {
-                        Debug.LogWarning("Failed to find component of type " + query);
+                        Debug.LogWarning("Failed to find component of type " +
+                            frameAction.component);
                         continue;
                     }
 
-                    IterateBindingsForExpression(
-                        frameAction.expression,
-                        GetRootObjectRelativePath(gameObject),
-                        String.Join(".", frameAction.propertyName),
-                        componentType,
-                        (EditorCurveBinding binding, float value) => {
-                            Keyframe keyframe = new Keyframe((float)frame.time, value);
-                            if (!unityCurves.ContainsKey(binding))
-                                unityCurves.Add(binding, new List<Keyframe>());
-                            unityCurves[binding].Add(keyframe);
-                        });
+                    if (frameAction.expression is Ast.AssetExpression) {
+                        var assetExpression = (Ast.AssetExpression)frameAction.expression;
+
+                        UnityEngine.Object asset = null;
+                        string[] guids =
+                            AssetDatabase.FindAssets(DoubleQuote(assetExpression.name));
+                        foreach (string guid in guids) {
+                            string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                            if (!GetBaseName(assetPath).Equals(assetExpression.name))
+                                continue;
+                            // TODO: Support multiple assets in the same file.
+                            Type assetType = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+                            if (BaseNameOfType(assetType) != assetExpression.type)
+                                continue;
+                            asset = AssetDatabase.LoadAssetAtPath(assetPath, assetType);
+                            break;
+                        }
+
+                        if (asset == null) {
+                            Debug.LogWarning("Couldn't find an asset of type " +
+                                assetExpression.type + " named " + assetExpression.name);
+                        } else {
+                            var binding = new EditorCurveBinding();
+                            binding.path = GetRootObjectRelativePath(gameObject);
+                            binding.propertyName = PropertyToString(frameAction.property);
+                            binding.type = componentType;
+
+                            ObjectReferenceKeyframe keyframe;
+                            keyframe.time = (float)frame.time;
+                            keyframe.value = asset;
+
+                            if (!unityObjectReferenceCurves.ContainsKey(binding)) {
+                                unityObjectReferenceCurves.Add(
+                                    binding,
+                                    new List<ObjectReferenceKeyframe>());
+                            }
+                            unityObjectReferenceCurves[binding].Add(keyframe);
+                        }
+                    } else {
+                        // Float binding.
+                        IterateBindingsForExpression(
+                            frameAction.expression,
+                            GetRootObjectRelativePath(gameObject),
+                            PropertyToString(frameAction.property),
+                            componentType,
+                            (EditorCurveBinding binding, float value) => {
+                                Keyframe keyframe = new Keyframe((float)frame.time, value);
+                                if (!unityFloatCurves.ContainsKey(binding))
+                                    unityFloatCurves.Add(binding, new List<Keyframe>());
+                                unityFloatCurves[binding].Add(keyframe);
+                            });
+                    }
                 }
             }
 
-            foreach (var KVP in unityCurves) {
+            // Set float curves.
+            foreach (var KVP in unityFloatCurves) {
                 Keyframe[] keyframes = KVP.Value.ToArray();
                 Array.Sort(keyframes, new KeyframeComparer());
                 AnimationCurve animationCurve = new AnimationCurve(keyframes);
                 AnimationUtility.SetEditorCurve(unityAnimation, KVP.Key, animationCurve);
+            }
+
+            // Set object reference curves.
+            foreach (var KVP in unityObjectReferenceCurves) {
+                ObjectReferenceKeyframe[] keyframes = KVP.Value.ToArray();
+                Array.Sort(keyframes, new ObjectReferenceKeyframeComparer());
+                AnimationUtility.SetObjectReferenceCurve(unityAnimation, KVP.Key, keyframes);
             }
 
             string animationName = controllerName + "_" + layerName + "_" + stateName;

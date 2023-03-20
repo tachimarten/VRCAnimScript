@@ -23,7 +23,8 @@ saved param Geddan: bool = false
 saved param Pants: bool = true
 saved param LifeBarIn: bool = false
 
-# Declare your menu items here. Right now only one level of toggles are supported.
+# Declare your menu items here. Submenus and menu items other than toggles are currently
+# unsupported.
 menuitem Wrench
     icon item_sword
     toggle Wrench
@@ -100,16 +101,17 @@ controller fx
     layer Pants
         initial state PantsOn
             do
-                Body::SkinnedMeshRenderer.blendShape.NoPants = 0
-                Body::SkinnedMeshRenderer.blendShape.CorrectionPelvisClip = 100
+                # If you're familiar with Unity animation paths, you may be expecting to write this
+                # as `m_Materials.Array.data[6]`. In VRCAnimScript, the `.Array.data` is implied, so
+                # you can just write `m_Materials[6]`.
+                Body::SkinnedMeshRenderer.m_Materials[6] = (Material)TachiHidden
+                Body::SkinnedMeshRenderer.m_Materials[7] = (Material)"T_Tachi_ClothesHair.004"
             goto PantsOff if !Pants
         state PantsOff
             do
-                Body::SkinnedMeshRenderer.blendShape.NoPants = 100
-                Body::SkinnedMeshRenderer.blendShape.CorrectionPelvisClip = 0
+                Body::SkinnedMeshRenderer.m_Materials[6] = (Material)"T_Tachi_Body.008"
+                Body::SkinnedMeshRenderer.m_Materials[7] = (Material)TachiHidden
             goto PantsOn if Pants
-
-    
 
 #    layer LifeBar
 #        initial state LifeBarIn
