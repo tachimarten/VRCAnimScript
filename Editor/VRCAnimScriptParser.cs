@@ -64,8 +64,10 @@ namespace VRCAnimScript {
                         fxController = ParseControllerSection();
                     else if (ConsumeKeyword("action"))
                         actionController = ParseControllerSection();
-                    else
-                        throw new Exception("Expected \"fx\" or \"action\" after \"controller\"");
+                    else {
+                        throw new ParseException(
+                            "Expected \"fx\" or \"action\" after \"controller\"", tokenizer);
+                    }
                     continue;
                 }
                 break;
@@ -86,28 +88,49 @@ namespace VRCAnimScript {
 
         public void EnsureFinished() {
             if (nextToken != null)
-                throw new Exception("Expected end of input but found " + nextToken);
+                throw new ParseException("Expected end of input but found " + nextToken, tokenizer);
         }
 
         Param ParseParam() {
-            Param param = new Param();
-            param.saved = ConsumeKeyword("saved");
+            bool saved = ConsumeKeyword("saved");
             if (!ConsumeKeyword("param"))
                 return null;
 
-            param.name = ExpectMaybeQuotedString();
+            string name = ExpectMaybeQuotedString();
             ExpectPunctuation(":");
-            ExpectKeyword("bool");  // TODO: support ints
-            ExpectPunctuation("=");
+            if (ConsumeKeyword("bool")) {
+                ExpectPunctuation("=");
 
-            if (ConsumeKeyword("false"))
-                param.initialValue = false;
-            else if (ConsumeKeyword("true"))
-                param.initialValue = true;
-            else
-                throw new Exception("Expected \"true\" or \"false\" for parameter initializer");
+                bool initialValue;
+                if (ConsumeKeyword("false")) {
+                    initialValue = false;
+                } else if (ConsumeKeyword("true")) {
+                    initialValue = true;
+                } else {
+                    throw new ParseException(
+                        "Expected \"true\" or \"false\" for parameter initializer",
+                        tokenizer);
+                }
 
-            return param;
+                BoolParam param = new BoolParam();
+                param.name = name;
+                param.saved = saved;
+                param.initialValue = initialValue;
+                return param;
+            } else if (ConsumeKeyword("float")) {
+                ExpectPunctuation("=");
+
+                double initialValue = ExpectIntOrFloatLiteral();
+
+                FloatParam param = new FloatParam();
+                param.name = name;
+                param.saved = saved;
+                param.initialValue = initialValue;
+                return param;
+            }
+
+            throw new ParseException("Expected \"bool\" or \"float\" for parameter type",
+                tokenizer);
         }
 
         MenuItem ParseMenuItem() {
@@ -145,11 +168,17 @@ namespace VRCAnimScript {
         }
 
         Layer ParseLayer() {
-            if (!ConsumeKeyword("layer"))
+            bool additive = false;
+            if (ConsumeKeyword("additive")) {
+                additive = true;
+                ExpectKeyword("layer");
+            } else if (!ConsumeKeyword("layer")) {
                 return null;
+            }
 
             Layer layer = new Layer();
             layer.name = ExpectMaybeQuotedString();
+            layer.additive = additive;
 
             var states = new List<State>();
             State state;
@@ -207,12 +236,19 @@ namespace VRCAnimScript {
         }
 
         InlineAnimation ParseInlineAnimation() {
-            if (!ConsumeKeyword("do"))
+            bool loop = false;
+            if (ConsumeKeyword("loop")) {
+                loop = true;
+                ExpectKeyword("do");
+            } else if (!ConsumeKeyword("do")) {
                 return null;
+            }
 
             bool singleFrame = FrameActionIsNext();
 
             InlineAnimation animation = new InlineAnimation();
+            animation.loop = loop;
+
             var frames = new List<Frame>();
             if (singleFrame) {
                 Frame frame = new Frame();
@@ -273,6 +309,15 @@ namespace VRCAnimScript {
             ExpectPunctuation("=");
 
             action.expression = ParseExpression();
+
+            if (ConsumeKeyword("curve")) {
+                ExpectPunctuation("(");
+                action.prevTangent = (double)ExpectIntOrFloatLiteral();
+                if (ConsumePunctuation(","))
+                    action.nextTangent = (double)ExpectIntOrFloatLiteral();
+                ExpectPunctuation(")");
+            }
+
             return action;
         }
 
@@ -306,6 +351,8 @@ namespace VRCAnimScript {
             Expression expression;
             if ((expression = ParseIntExpression()) != null)
                 return expression;
+            if ((expression = ParseFloatExpression()) != null)
+                return expression;
             if ((expression = ParseVectorLiteralExpression()) != null)
                 return expression;
             if ((expression = ParseAssetExpression()) != null)
@@ -323,6 +370,16 @@ namespace VRCAnimScript {
             return intExpression;
         }
 
+        FloatExpression ParseFloatExpression() {
+            double value;
+            if (!ConsumeFloatLiteral(out value))
+                return null;
+
+            FloatExpression floatExpression = new FloatExpression();
+            floatExpression.value = value;
+            return floatExpression;
+        }
+
         VectorLiteralExpression ParseVectorLiteralExpression() {
             double[] values;
             if (ConsumeKeyword("vec3"))
@@ -334,8 +391,7 @@ namespace VRCAnimScript {
 
             ExpectPunctuation("(");
             for (int index = 0; index < values.Length; index++) {
-                bool negative = ConsumePunctuation("-");
-                values[index] = (negative ? -1 : 1) * ExpectIntOrFloatLiteral();
+                values[index] = ExpectIntOrFloatLiteral();
                 ConsumePunctuation(",");
             }
             ExpectPunctuation(")");
@@ -383,8 +439,10 @@ namespace VRCAnimScript {
                 return null;
 
             ParamTransitionCondition condition = new ParamTransitionCondition();
-            condition.value = !ConsumePunctuation("!");
-            condition.param = ExpectMaybeQuotedString();
+            BooleanExpression expression = ParseBooleanDisjunction();
+            if (expression == null)
+                throw new ParseException("Expected Boolean expression", tokenizer);
+            condition.expression = expression;
             return condition;
         }
 
@@ -396,6 +454,111 @@ namespace VRCAnimScript {
             TimeTransitionCondition condition = new TimeTransitionCondition();
             condition.time = ExpectIntOrFloatLiteral();
             return condition;
+        }
+
+        BooleanExpression ParseBooleanDisjunction() {
+            BooleanExpression lhs = ParseBooleanConjunction();
+            if (lhs == null)
+                return null;
+
+            if (ConsumePunctuation("||")) {
+                BooleanExpression rhs = ParseBooleanDisjunction();
+                if (rhs == null)
+                    throw new ParseException("Expected Boolean expression", tokenizer);
+
+                OrBooleanExpression expression = new OrBooleanExpression();
+                expression.lhs = lhs;
+                expression.rhs = rhs;
+                return expression;
+            }
+            return lhs;
+        }
+
+        BooleanExpression ParseBooleanConjunction() {
+            BooleanExpression lhs = ParseBooleanComparison();
+            if (lhs == null)
+                return null;
+
+            if (ConsumePunctuation("&&")) {
+                BooleanExpression rhs = ParseBooleanConjunction();
+                if (rhs == null)
+                    throw new ParseException("Expected Boolean expression", tokenizer);
+
+                AndBooleanExpression expression = new AndBooleanExpression();
+                expression.lhs = lhs;
+                expression.rhs = rhs;
+                return expression;
+            }
+            return lhs;
+        }
+
+        BooleanExpression ParseBooleanComparison() {
+            BooleanExpression lhs = ParseHighPrecedenceBooleanExpression();
+            if (lhs == null)
+                return null;
+
+            if (!(nextToken is PunctuationToken))
+                return lhs;
+
+            RelationalOperator op;
+            switch (((PunctuationToken)nextToken).Value) {
+            case "==":
+                op = RelationalOperator.Equal;
+                break;
+            case "!=":
+                op = RelationalOperator.NotEqual;
+                break;
+            case "<":
+                op = RelationalOperator.Less;
+                break;
+            case ">":
+                op = RelationalOperator.Greater;
+                break;
+            case "<=":
+                op = RelationalOperator.LessEqual;
+                break;
+            case ">=":
+                op = RelationalOperator.GreaterEqual;
+                break;
+            default:
+                return lhs;
+            }
+            GetToken();
+
+            if (!(lhs is ParamBooleanExpression))
+                throw new ParseException("Expected parameter name", tokenizer);
+
+            RelationalBooleanExpression expression = new RelationalBooleanExpression();
+            expression.paramName = ((ParamBooleanExpression)lhs).paramName;
+            expression.op = op;
+            expression.value = ExpectIntOrFloatLiteral();
+            return expression;
+        }
+
+        BooleanExpression ParseHighPrecedenceBooleanExpression() {
+            if (ConsumePunctuation("!")) {
+                var notExpression = new NotBooleanExpression();
+                BooleanExpression subexpression = ParseHighPrecedenceBooleanExpression();
+                if (subexpression == null)
+                    throw new ParseException("Expected Boolean expression", tokenizer);
+                notExpression.expression = subexpression;
+                return notExpression;
+            }
+
+            if (ConsumePunctuation("(")) {
+                BooleanExpression expression = ParseBooleanDisjunction();
+                ExpectPunctuation(")");
+                return expression;
+            }
+
+            return ParseBooleanLiteral();
+        }
+
+        BooleanExpression ParseBooleanLiteral() {
+            string paramName = ExpectMaybeQuotedString();
+            var paramBooleanExpression = new ParamBooleanExpression();
+            paramBooleanExpression.paramName = paramName;
+            return paramBooleanExpression;
         }
 
         private bool ConsumeKeyword(string keyword) {
@@ -420,6 +583,15 @@ namespace VRCAnimScript {
                 return true;
             }
             outValue = 0;
+            return false;
+        }
+
+        private bool ConsumeFloatLiteral(out double outValue) {
+            if (nextToken is FloatLiteralToken) {
+                outValue = ((FloatLiteralToken)GetToken()).Value;
+                return true;
+            }
+            outValue = 0.0;
             return false;
         }
 
@@ -450,18 +622,20 @@ namespace VRCAnimScript {
 
         private void ExpectPunctuation(string punct) {
             if (!ConsumePunctuation(punct))
-                throw new Exception("Expected " + punct);
+                throw new ParseException("Expected " + punct, tokenizer);
         }
 
         private void ExpectKeyword(string keyword) {
             if (!ConsumeKeyword(keyword))
-                throw new Exception("Expected " + keyword);
+                throw new ParseException("Expected " + keyword, tokenizer);
         }
 
         private string ExpectMaybeQuotedString() {
             string quotedString = ConsumeMaybeQuotedString();
-            if (quotedString == null)
-                throw new Exception("Expected quoted or unquoted string");
+            if (quotedString == null) {
+                throw new ParseException(
+                    "Expected quoted or unquoted string but found " + nextToken, tokenizer);
+            }
             return quotedString;
         }
 
@@ -499,16 +673,17 @@ namespace VRCAnimScript {
             public ControllerSection fxController;
         }
 
-        public class Param {
+        public abstract class Param {
             public bool saved;
             public string name;
-            public bool initialValue;
+        }
 
-            public Param() {
-                saved = false;
-                name = null;
-                initialValue = false;
-            }
+        public class BoolParam : Param {
+            public bool initialValue;
+        }
+
+        public class FloatParam : Param {
+            public double initialValue;
         }
 
         public class Menu {
@@ -532,6 +707,7 @@ namespace VRCAnimScript {
         public class Layer {
             public string name;
             public State[] states;
+            public bool additive;
         }
 
         public class State {
@@ -549,6 +725,7 @@ namespace VRCAnimScript {
 
         public class InlineAnimation : Animation {
             public Frame[] frames;
+            public bool loop;
         }
 
         public class Frame {
@@ -561,6 +738,8 @@ namespace VRCAnimScript {
             public string component;
             public PropertyComponent[] property;
             public Expression expression;
+            public double? prevTangent;
+            public double? nextTangent;
         }
 
         public abstract class PropertyComponent { }
@@ -577,6 +756,10 @@ namespace VRCAnimScript {
 
         public class IntExpression : Expression {
             public int value;
+        }
+
+        public class FloatExpression : Expression {
+            public double value;
         }
 
         public class VectorLiteralExpression : Expression {
@@ -596,224 +779,49 @@ namespace VRCAnimScript {
         public abstract class TransitionCondition { }
 
         public class ParamTransitionCondition : TransitionCondition {
-            public string param;
-            public bool value;
+            public BooleanExpression expression;
         }
 
         public class TimeTransitionCondition : TransitionCondition {
             public double time;
         }
 
+        public abstract class BooleanExpression {}
+
+        public abstract class SingleTestBooleanExpression : BooleanExpression {
+            public string paramName;
+        }
+
+        public class ParamBooleanExpression : SingleTestBooleanExpression {}
+
+        public class RelationalBooleanExpression : SingleTestBooleanExpression {
+            public RelationalOperator op;
+            public double value;
+        }
+
+        public class AndBooleanExpression : BooleanExpression {
+            public BooleanExpression lhs;
+            public BooleanExpression rhs;
+        }
+
+        public class OrBooleanExpression : BooleanExpression {
+            public BooleanExpression lhs;
+            public BooleanExpression rhs;
+        }
+
+        public class NotBooleanExpression : BooleanExpression {
+            public BooleanExpression expression;
+        }
+
+        public enum RelationalOperator {
+            Equal,
+            NotEqual,
+            Less,
+            Greater,
+            LessEqual,
+            GreaterEqual,
+        }
+
     }   // end namespace Ast
-
-    // A simple tokenizer that splits a stream into tokens
-    class Tokenizer : IDisposable {
-        private StreamReader reader;
-
-        public Tokenizer(Stream stream) {
-            this.reader = new StreamReader(stream);
-        }
-
-        public void Dispose() {
-            this.reader.Dispose();
-        }
-
-        public Token NextToken() {
-            string token = "";
-            char c;
-
-            while ((c = (char)reader.Peek()) != 0xffff) {
-                // Check for comments
-                if (c == '#') {
-                    reader.ReadLine();
-                    continue;
-                }
-
-                // Check for whitespace
-                if (Char.IsWhiteSpace(c)) {
-                    reader.Read();
-                    continue;
-                }
-
-                // Check for integer or floating point literals
-                if (Char.IsDigit(c)) {
-                    bool isFloatingPoint = false;
-
-                    while ((c = (char)reader.Peek()) != -1 && (Char.IsDigit(c) || (!isFloatingPoint && c == '.'))) {
-                        if (c == '.')
-                            isFloatingPoint = true;
-
-                        token += (char)reader.Read();
-                    }
-
-                    if (isFloatingPoint)
-                        return new FloatLiteralToken(Double.Parse(token));
-                    return new IntegerLiteralToken(Int32.Parse(token));
-                }
-
-                // Check for quoted strings
-                if (c == '"' || c == '\'') {
-                    char quoteChar = c;
-                    token += (char)reader.Read();
-
-                    while ((c = (char)reader.Peek()) != -1 && c != quoteChar) {
-                        if (c == '\\') {
-                            token += (char)reader.Read();
-
-                            if ((c = (char)reader.Peek()) != -1)
-                                token += (char)reader.Read();
-                        } else {
-                            token += (char)reader.Read();
-                        }
-                    }
-
-                    if (c == quoteChar)
-                        token += (char)reader.Read();
-
-                    return new StringLiteralToken(ParseQuotedString(token.Substring(1, token.Length - 2)));
-                }
-
-                // Check for keywords
-                if (Char.IsLetter(c) || c == '_') {
-                    while ((c = (char)reader.Peek()) != -1 && (Char.IsLetterOrDigit(c) || c == '_')) {
-                        token += (char)reader.Read();
-                    }
-
-                    return new KeywordToken(token);
-                }
-
-                if (c == ':') {
-                    token += c;
-                    reader.Read();
-                    if (reader.Peek() == ':') {
-                        reader.Read();
-                        token += ':';
-                    }
-                    return new PunctuationToken(token);
-                }
-
-                if ("=!*,-.()[]".Contains("" + c)) {
-                    token += c;
-                    reader.Read();
-                    return new PunctuationToken(token);
-                }
-
-                // If we get here, we have an invalid token
-                throw new Exception("Syntax error: invalid token: " + (int)c);
-            }
-
-            // End of input
-            return null;
-        }
-
-        public string ParseQuotedString(string input) {
-            StringBuilder output = new StringBuilder();
-            bool escape = false;
-
-            foreach (char c in input) {
-                if (escape) {
-                    switch (c) {
-                        case 'n':
-                            output.Append('\n');
-                            break;
-                        case 'r':
-                            output.Append('\r');
-                            break;
-                        case 't':
-                            output.Append('\t');
-                            break;
-                        case '\\':
-                            output.Append('\\');
-                            break;
-                        case '\'':
-                            output.Append('\'');
-                            break;
-                        case '\"':
-                            output.Append('\"');
-                            break;
-                        default:
-                            throw new Exception($"Invalid escape sequence: \\{c}");
-                    }
-
-                    escape = false;
-                } else if (c == '\\') {
-                    escape = true;
-                } else {
-                    output.Append(c);
-                }
-            }
-
-            if (escape)
-                throw new Exception("Invalid escape sequence: \\");
-
-            return output.ToString();
-        }
-
-
-    }
-
-    abstract class Token {
-        public abstract override string ToString();
-    }
-
-    class IntegerLiteralToken : Token {
-        public int Value { get; }
-
-        public IntegerLiteralToken(int value) {
-            Value = value;
-        }
-
-        public override string ToString() {
-            return $"IntegerLiteralToken({Value})";
-        }
-    }
-
-    class FloatLiteralToken : Token {
-        public double Value { get; }
-
-        public FloatLiteralToken(double value) {
-            Value = value;
-        }
-
-        public override string ToString() {
-            return $"FloatLiteralToken({Value})";
-        }
-    }
-
-    class StringLiteralToken : Token {
-        public string Value { get; }
-
-        public StringLiteralToken(string value) {
-            Value = value;
-        }
-
-        public override string ToString() {
-            return $"StringLiteralToken(\"{Value}\")";
-        }
-    }
-
-    class KeywordToken : Token {
-        public string Value { get; }
-
-        public KeywordToken(string value) {
-            Value = value;
-        }
-
-        public override string ToString() {
-            return $"KeywordToken({Value})";
-        }
-    }
-
-    class PunctuationToken : Token {
-        public string Value { get; }
-
-        public PunctuationToken(string value) {
-            Value = value;
-        }
-
-        public override string ToString() {
-            return $"PunctuationToken('{Value}')";
-        }
-    }
 
 }   // end namespace VRCAnimScript

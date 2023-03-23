@@ -29,6 +29,8 @@ namespace VRCAnimScript {
     }
 
     class Materializer {
+        const double FLOAT_QUANTUM = 0.00001;
+
         Ast.Root root;
 
         GameObject rootObject;
@@ -115,10 +117,21 @@ namespace VRCAnimScript {
             for (int i = 0; i < allParams.Length; i++) {
                 Ast.Param param = allParams[i];
                 var vrcParam = new VRCExpressionParameters.Parameter();
-                vrcParam.defaultValue = param.initialValue ? 1.0f : 0.0f;
                 vrcParam.name = param.name;
                 vrcParam.saved = param.saved;
-                vrcParam.valueType = VRCExpressionParameters.ValueType.Bool;
+
+                if (param is Ast.BoolParam) {
+                    var boolParam = (Ast.BoolParam)param;
+                    vrcParam.valueType = VRCExpressionParameters.ValueType.Bool;
+                    vrcParam.defaultValue = boolParam.initialValue ? 1.0f : 0.0f;
+                } else if (param is Ast.FloatParam) {
+                    var floatParam = (Ast.FloatParam)param;
+                    vrcParam.valueType = VRCExpressionParameters.ValueType.Float;
+                    vrcParam.defaultValue = (float)floatParam.initialValue;
+                } else {
+                    throw new Exception("Unknown parameter type");
+                }
+
                 vrcParams.parameters[i] = vrcParam;
             }
 
@@ -167,7 +180,7 @@ namespace VRCAnimScript {
             if (unityController == null)
                 throw new Exception("Failed to create Unity controller " + assetName);
 
-            HashSet<string> allParameters = new HashSet<string>();
+            var allParameters = new Dictionary<string, AnimatorControllerParameterType>();
 
             for (int layerIndex = 0; layerIndex < controllerSection.layers.Length; layerIndex++) {
                 Ast.Layer layer = controllerSection.layers[layerIndex];
@@ -179,6 +192,10 @@ namespace VRCAnimScript {
                 AnimatorStateMachine unityStateMachine = unityLayer.stateMachine;
 
                 unityLayer.defaultWeight = 1.0f;
+                if (layer.additive)
+                    unityLayer.blendingMode = AnimatorLayerBlendingMode.Additive;
+                else
+                    unityLayer.blendingMode = AnimatorLayerBlendingMode.Override;
 
                 AnimatorState[] unityStates = new AnimatorState[layer.states.Length];
                 var nameToUnityState = new Dictionary<string, AnimatorState>();
@@ -259,24 +276,19 @@ namespace VRCAnimScript {
                             transitionIndex++) {
                         Ast.StateTransition transition = state.transitions[transitionIndex];
                         AnimatorState destination = nameToUnityState[transition.destination];
-                        AnimatorStateTransition unityTransition =
-                            unityState.AddTransition(destination);
-
-                        // TODO: Make these customizable?
-                        unityTransition.duration = 0.0f;
-                        unityTransition.hasExitTime = false;
 
                         Ast.TransitionCondition condition = transition.condition;
                         if (condition is Ast.TimeTransitionCondition) {
                             var timeCondition = (Ast.TimeTransitionCondition)condition;
+                            AnimatorStateTransition unityTransition =
+                                unityState.AddTransition(destination);
+                            // TODO: Make these customizable?
+                            unityTransition.duration = 0.0f;
+                            unityTransition.hasExitTime = false;
                             unityTransition.offset = (float)timeCondition.time;
                         } else if (condition is Ast.ParamTransitionCondition) {
-                            var paramCondition = (Ast.ParamTransitionCondition)condition;
-                            allParameters.Add(paramCondition.param);
-                            AnimatorConditionMode conditionMode = paramCondition.value ?
-                                AnimatorConditionMode.If :
-                                AnimatorConditionMode.IfNot;
-                            unityTransition.AddCondition(conditionMode, 0.0f, paramCondition.param);
+                            MaterializeParamTransition((Ast.ParamTransitionCondition)condition,
+                                unityState, destination, allParameters);
                         } else {
                             throw new Exception("Unknown transition condition AST node");
                         }
@@ -288,13 +300,87 @@ namespace VRCAnimScript {
             }
 
             // Set up parameters.
-            foreach (string parameter in allParameters)
-                unityController.AddParameter(parameter, AnimatorControllerParameterType.Bool);
+            foreach (KeyValuePair<string, AnimatorControllerParameterType> kvp in allParameters)
+                unityController.AddParameter(kvp.Key, kvp.Value);
 
             EditorUtility.SetDirty(unityController);
             AssetDatabase.SaveAssets();
 
             return assetPath;
+        }
+
+        private void MaterializeParamTransition(
+                Ast.ParamTransitionCondition paramCondition,
+                AnimatorState source,
+                AnimatorState destination,
+                Dictionary<string, AnimatorControllerParameterType> allParameters) {
+            Compiler.Disjunction disjunction =
+                Compiler.Disjunction.FromAst(paramCondition.expression);
+
+            foreach (Compiler.Conjunction conjunction in disjunction.conjunctions) {
+                AnimatorStateTransition unityTransition = source.AddTransition(destination);
+
+                // TODO: Make these customizable?
+                unityTransition.duration = 0.0f;
+                unityTransition.hasExitTime = false;
+
+                foreach (Compiler.Literal literal in conjunction.literals) {
+                    AnimatorConditionMode conditionMode = AnimatorConditionMode.If;
+                    double testValue = 0.0;
+                    var paramType = AnimatorControllerParameterType.Bool;
+
+                    if (literal is Compiler.BoolParamLiteral) {
+                        Compiler.BoolParamLiteral boolParamLiteral =
+                            (Compiler.BoolParamLiteral)literal;
+                        testValue = 0.0;
+                        paramType = AnimatorControllerParameterType.Bool;
+
+                        if (boolParamLiteral.negated)
+                            conditionMode = AnimatorConditionMode.IfNot;
+                        else
+                            conditionMode = AnimatorConditionMode.If;
+                    } else if (literal is Compiler.FloatParamLiteral) {
+                        Compiler.FloatParamLiteral floatParamLiteral =
+                            (Compiler.FloatParamLiteral)literal;
+                        paramType = AnimatorControllerParameterType.Float;
+
+                        switch (floatParamLiteral.op) {
+                        case Compiler.FloatRelationalOperator.Less:
+                            conditionMode = AnimatorConditionMode.Less;
+                            testValue = floatParamLiteral.value;
+                            break;
+                        case Compiler.FloatRelationalOperator.Greater:
+                            conditionMode = AnimatorConditionMode.Greater;
+                            testValue = floatParamLiteral.value;
+                            break;
+                        case Compiler.FloatRelationalOperator.LessEqual:
+                            conditionMode = AnimatorConditionMode.Less;
+                            testValue = floatParamLiteral.value + FLOAT_QUANTUM;
+                            break;
+                        case Compiler.FloatRelationalOperator.GreaterEqual:
+                            conditionMode = AnimatorConditionMode.Greater;
+                            testValue = floatParamLiteral.value - FLOAT_QUANTUM;
+                            break;
+                        }
+                    } else {
+                        throw new Exception("Unknown param literal type");
+                    }
+
+                    unityTransition.AddCondition(conditionMode, (float)testValue,
+                        literal.paramName);
+
+                    if (allParameters.ContainsKey(literal.paramName)) {
+                        AnimatorControllerParameterType expected =
+                            allParameters[literal.paramName];
+                        if (expected != paramType) {
+                            throw new Exception("Mismatched parameter type: expected " + expected +
+                                " but found " + paramType);
+                        }
+                    } else {
+                        allParameters.Add(literal.paramName, paramType);
+                    }
+                }
+            }
         }
 
         private string GetRootObjectRelativePath(GameObject obj) {
@@ -317,6 +403,15 @@ namespace VRCAnimScript {
                 binding.type = type;
                 binding.propertyName = propertyName;
                 iterator(binding, (float)((Ast.IntExpression)expression).value);
+                return;
+            }
+
+            if (expression is Ast.FloatExpression) {
+                EditorCurveBinding binding = new EditorCurveBinding();
+                binding.path = path;
+                binding.type = type;
+                binding.propertyName = propertyName;
+                iterator(binding, (float)((Ast.FloatExpression)expression).value);
                 return;
             }
 
@@ -361,6 +456,13 @@ namespace VRCAnimScript {
                 string layerName,
                 string stateName) {
             AnimationClip unityAnimation = new AnimationClip();
+
+            // Set loop time.
+            AnimationClipSettings settings =
+                AnimationUtility.GetAnimationClipSettings(unityAnimation);
+            settings.loopTime = animation.loop;
+            AnimationUtility.SetAnimationClipSettings(unityAnimation, settings);
+
             var unityFloatCurves = new Dictionary<EditorCurveBinding, List<Keyframe>>();
             var unityObjectReferenceCurves =
                 new Dictionary<EditorCurveBinding, List<ObjectReferenceKeyframe>>();
@@ -444,6 +546,15 @@ namespace VRCAnimScript {
                             componentType,
                             (EditorCurveBinding binding, float value) => {
                                 Keyframe keyframe = new Keyframe((float)frame.time, value);
+
+                                if (frameAction.prevTangent != null) {
+                                    keyframe.inTangent = (float)frameAction.prevTangent;
+                                    if (frameAction.nextTangent != null)
+                                        keyframe.outTangent = (float)frameAction.nextTangent;
+                                    else
+                                        keyframe.outTangent = keyframe.inTangent;
+                                }
+
                                 if (!unityFloatCurves.ContainsKey(binding))
                                     unityFloatCurves.Add(binding, new List<Keyframe>());
                                 unityFloatCurves[binding].Add(keyframe);
@@ -530,11 +641,40 @@ namespace VRCAnimScript {
             }
         }
 
-#if false
-        [MenuItem("Tools/Dump Asset")]
-        static void DumpAsset() {
-            if (!(Selection.activeObject is AnimationClip)) {
-                Debug.Log(Selection.activeObject.GetType());
+        [MenuItem("Tools/Create Scratchpad Animation")]
+        static void CreateScratchpadAnimation() {
+            string controllerPath = "Assets/VRCAnimScriptScratchpadController.controller";
+            string clipPath = "Assets/VRCAnimScriptScratchpadAnimation.anim";
+
+            AnimatorController controller = AnimatorController.CreateAnimatorControllerAtPath(
+                controllerPath);
+            if (controller == null)
+                throw new Exception("Failed to create Unity controller");
+
+            var clip = new AnimationClip();
+            AssetDatabase.CreateAsset(clip, clipPath);
+
+            AnimatorControllerLayer layer = controller.layers[0];
+            AnimatorStateMachine stateMachine = layer.stateMachine;
+            layer.defaultWeight = 1.0f;
+            AnimatorState state = stateMachine.AddState("Temp");
+            state.motion = clip;
+
+            Debug.Log("Created " + controllerPath + " and " + clipPath);
+
+            if (Selection.activeObject == null || !(Selection.activeObject is GameObject))
+                return;
+            GameObject gameObject = (GameObject)Selection.activeObject;
+            Animator animator = gameObject.GetComponent<Animator>();
+            if (animator == null)
+                return;
+            animator.runtimeAnimatorController = controller;
+        }
+
+        [MenuItem("Tools/Dump Animation Properties")]
+        static void DumpAnimationProperties() {
+            if (Selection.activeObject == null || !(Selection.activeObject is AnimationClip)) {
+                Debug.LogError("Select an animation clip asset first.");
                 return;
             }
 
@@ -563,6 +703,7 @@ namespace VRCAnimScript {
             }
         }
 
+#if false
         [MenuItem("Tools/Dump Component")]
         static void DumpComponent() {
             if (!(Selection.activeObject is GameObject)) {
@@ -587,4 +728,233 @@ namespace VRCAnimScript {
         }
 #endif
     }
+
+    namespace Compiler {
+
+        // Disjunctive normal form
+        class Disjunction {
+            public Conjunction[] conjunctions;
+
+            public static Disjunction FromAst(Ast.BooleanExpression expression) {
+                // Special desugaring case for == and !=.
+                //
+                // This will always terminate. Proof: conversion of == or != to >=/<= is a one-
+                // way operation and nothing can produce a == or != that wasn't already there in
+                // the source.
+                if (expression is Ast.RelationalBooleanExpression) {
+                    var relationalExpression = (Ast.RelationalBooleanExpression)expression;
+                    if (relationalExpression.op == Ast.RelationalOperator.Equal ||
+                            relationalExpression.op == Ast.RelationalOperator.NotEqual) {
+                        var newAndExpression = new Ast.AndBooleanExpression();
+                        var newLHSExpression = new Ast.RelationalBooleanExpression();
+                        var newRHSExpression = new Ast.RelationalBooleanExpression();
+                        newAndExpression.lhs = newLHSExpression;
+                        newAndExpression.rhs = newRHSExpression;
+
+                        newLHSExpression.paramName = newRHSExpression.paramName =
+                            relationalExpression.paramName;
+                        newLHSExpression.value = newRHSExpression.value =
+                            relationalExpression.value;
+                        newLHSExpression.op = Ast.RelationalOperator.GreaterEqual;
+                        newRHSExpression.op = Ast.RelationalOperator.LessEqual;
+
+                        if (relationalExpression.op == Ast.RelationalOperator.Equal)
+                            return Disjunction.FromAst(newAndExpression);
+
+                        // NotEqual case:
+                        var newNotExpression = new Ast.NotBooleanExpression();
+                        newNotExpression.expression = newAndExpression;
+                        return Disjunction.FromAst(newNotExpression);
+                    }
+
+                }
+
+                // Literals
+                if (expression is Ast.SingleTestBooleanExpression) {
+                    Literal literal = null;
+                    
+                    if (expression is Ast.ParamBooleanExpression) {
+                        literal = new BoolParamLiteral();
+                    } else if (expression is Ast.RelationalBooleanExpression) {
+                        var relationalExpression = (Ast.RelationalBooleanExpression)expression;
+                        FloatParamLiteral floatLiteral = new FloatParamLiteral();
+                        floatLiteral.value = relationalExpression.value;
+
+                        switch (relationalExpression.op) {
+                        case Ast.RelationalOperator.Greater:
+                            floatLiteral.op = FloatRelationalOperator.Greater;
+                            break;
+                        case Ast.RelationalOperator.Less:
+                            floatLiteral.op = FloatRelationalOperator.Less;
+                            break;
+                        case Ast.RelationalOperator.GreaterEqual:
+                            floatLiteral.op = FloatRelationalOperator.GreaterEqual;
+                            break;
+                        case Ast.RelationalOperator.LessEqual:
+                            floatLiteral.op = FloatRelationalOperator.LessEqual;
+                            break;
+                        }
+
+                        literal = floatLiteral;
+                    }
+
+                    literal.paramName = ((Ast.SingleTestBooleanExpression)expression).paramName;
+
+                    Conjunction conjunction = new Conjunction();
+                    conjunction.literals = new Literal[1];
+                    conjunction.literals[0] = literal;
+
+                    Disjunction disjunction = new Disjunction();
+                    disjunction.conjunctions = new Conjunction[1];
+                    disjunction.conjunctions[0] = conjunction;
+                    return disjunction;
+                }
+
+                if (expression is Ast.OrBooleanExpression) {
+                    Ast.OrBooleanExpression orExpression = (Ast.OrBooleanExpression)expression;
+                    Disjunction lhs = Disjunction.FromAst(orExpression.lhs);
+                    Disjunction rhs = Disjunction.FromAst(orExpression.rhs);
+
+                    var conjunctions = new List<Conjunction>();
+                    conjunctions.AddRange(lhs.conjunctions);
+                    conjunctions.AddRange(rhs.conjunctions);
+                    Disjunction disjunction = new Disjunction();
+                    disjunction.conjunctions = conjunctions.ToArray();
+                    return disjunction;
+                }
+
+                if (expression is Ast.AndBooleanExpression) {
+                    Ast.AndBooleanExpression andExpression = (Ast.AndBooleanExpression)expression;
+                    Disjunction lhs = Disjunction.FromAst(andExpression.lhs);
+                    Disjunction rhs = Disjunction.FromAst(andExpression.rhs);
+
+                    var conjunctions = new List<Conjunction>();
+                    for (int lhsIndex = 0; lhsIndex < lhs.conjunctions.Length; lhsIndex++) {
+                        for (int rhsIndex = 0; rhsIndex < rhs.conjunctions.Length; rhsIndex++) {
+                            var literals = new List<Literal>();
+                            literals.AddRange(lhs.conjunctions[lhsIndex].literals);
+                            literals.AddRange(rhs.conjunctions[rhsIndex].literals);
+
+                            Conjunction conjunction = new Conjunction();
+                            conjunction.literals = literals.ToArray();
+                            conjunctions.Add(conjunction);
+                        }
+                    }
+
+                    Disjunction disjunction = new Disjunction();
+                    disjunction.conjunctions = conjunctions.ToArray();
+                    return disjunction;
+                }
+
+                if (expression is Ast.NotBooleanExpression) {
+                    var notExpression = ((Ast.NotBooleanExpression)expression).expression;
+                    if (notExpression is Ast.ParamBooleanExpression) {
+                        Disjunction disjunction = Disjunction.FromAst(notExpression);
+                        var boolParamLiteral = (Compiler.BoolParamLiteral)
+                            disjunction.conjunctions[0].literals[0];
+                        boolParamLiteral.negated = true;
+                        return disjunction;
+                    }
+
+                    if (notExpression is Ast.RelationalBooleanExpression) {
+                        var origExpression = (Ast.RelationalBooleanExpression)notExpression;
+                        var negatedExpression = new Ast.RelationalBooleanExpression();
+                        negatedExpression.value = origExpression.value;
+                        negatedExpression.paramName = origExpression.paramName;
+
+                        switch (origExpression.op) {
+                        case Ast.RelationalOperator.Equal:
+                            negatedExpression.op = Ast.RelationalOperator.NotEqual;
+                            break;
+                        case Ast.RelationalOperator.NotEqual:
+                            negatedExpression.op = Ast.RelationalOperator.Equal;
+                            break;
+                        case Ast.RelationalOperator.Less:
+                            negatedExpression.op = Ast.RelationalOperator.GreaterEqual;
+                            break;
+                        case Ast.RelationalOperator.Greater:
+                            negatedExpression.op = Ast.RelationalOperator.LessEqual;
+                            break;
+                        case Ast.RelationalOperator.LessEqual:
+                            negatedExpression.op = Ast.RelationalOperator.Greater;
+                            break;
+                        case Ast.RelationalOperator.GreaterEqual:
+                            negatedExpression.op = Ast.RelationalOperator.Less;
+                            break;
+                        }
+
+                        return Disjunction.FromAst(negatedExpression);
+                    }
+
+                    // Double negation
+                    if (notExpression is Ast.NotBooleanExpression) {
+                        return Disjunction.FromAst(
+                            ((Ast.NotBooleanExpression)notExpression).expression);
+                    }
+
+                    // De Morgan's laws
+
+                    if (notExpression is Ast.OrBooleanExpression) {
+                        Ast.OrBooleanExpression orExpression =
+                            (Ast.OrBooleanExpression)notExpression;
+
+                        Ast.AndBooleanExpression andExpression = new Ast.AndBooleanExpression();
+                        andExpression.lhs = new Ast.NotBooleanExpression();
+                        andExpression.rhs = new Ast.NotBooleanExpression();
+                        ((Ast.NotBooleanExpression)andExpression.lhs).expression =
+                            orExpression.lhs;
+                        ((Ast.NotBooleanExpression)andExpression.rhs).expression =
+                            orExpression.rhs;
+
+                        return Disjunction.FromAst(andExpression);
+                    }
+
+                    if (notExpression is Ast.AndBooleanExpression) {
+                        Ast.AndBooleanExpression andExpression =
+                            (Ast.AndBooleanExpression)notExpression;
+
+                        Ast.OrBooleanExpression orExpression = new Ast.OrBooleanExpression();
+                        orExpression.lhs = new Ast.NotBooleanExpression();
+                        orExpression.rhs = new Ast.NotBooleanExpression();
+                        ((Ast.NotBooleanExpression)orExpression.lhs).expression =
+                            andExpression.lhs;
+                        ((Ast.NotBooleanExpression)orExpression.rhs).expression =
+                            andExpression.rhs;
+
+                        return Disjunction.FromAst(orExpression);
+                    }
+
+                    throw new Exception("Unknown Boolean expression type behind not");
+                }
+
+                throw new Exception("Unknown Boolean expression type");
+            }
+        }
+
+        class Conjunction {
+            public Literal[] literals;
+        }
+
+        abstract class Literal {
+            public string paramName;
+        }
+
+        class BoolParamLiteral : Literal {
+            public bool negated;
+        }
+
+        class FloatParamLiteral : Literal {
+            public FloatRelationalOperator op;
+            public double value;
+        }
+
+        enum FloatRelationalOperator {
+            Greater,
+            Less,
+            GreaterEqual,
+            LessEqual
+        }
+
+    } // end namespace VRCAnimScript
+
 }   // end namespace VRCAnimScript

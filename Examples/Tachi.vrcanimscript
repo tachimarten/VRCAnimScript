@@ -14,14 +14,16 @@ avatar Tachi
 # The Unity name of your root object. This is the one containing the avatar descriptor.
 rootobject "jacob-ovrick-tachi-ik (1)"
 
-# Declare your parameters here. Right now only booleans are supported. The syntax is:
+# Declare your parameters here. Right now only booleans and floats are supported. The syntax is:
 #
 #   saved? param NAME: TYPE = EXPRESSION
 saved param Wrench: bool = false
 saved param FloatAndSplat: bool = false
 saved param Geddan: bool = false
 saved param Pants: bool = true
-saved param LifeBarIn: bool = false
+saved param TailSwish: bool = false
+saved param Hoverboard: bool = false
+param GroundDistance: float = 0.0
 
 # Declare your menu items here. Submenus and menu items other than toggles are currently
 # unsupported.
@@ -37,9 +39,12 @@ menuitem "Float & Splat"
 menuitem Pants
     icon symbol_heart
     toggle Pants
-menuitem "Show Life Bar"
-    icon symbol_heart
-    toggle LifeBarIn
+menuitem TailSwish
+    icon symbol_paw
+    toggle TailSwish
+menuitem Hoverboard
+    icon symbol_magic
+    toggle Hoverboard
 
 # Your action controller goes here.
 #
@@ -55,7 +60,7 @@ controller action
             goto Geddan if Geddan
             goto FloatAndSplat if FloatAndSplat
         state Geddan
-            # `play` plays a `.anim` asset. In this case, `BaileGETDOWN.anim`.
+            # `play` plays a `.anim` asset: in this case, `BaileGETDOWN.anim`.
             play BaileGETDOWN
             # Negation of booleans can be done with `!`. This one goes to Idle if Geddan is false.
             goto Idle if !Geddan
@@ -113,34 +118,44 @@ controller fx
                 Body::SkinnedMeshRenderer.m_Materials[7] = (Material)TachiHidden
             goto PantsOn if Pants
 
-#    layer LifeBar
-#        initial state LifeBarIn
-#            # Inline animations can have multiple frames. Start each frame with `at time SECONDS`,
-#            # where SECONDS is in (possibly fractional) seconds.
-#            do
-#                at time 0
-#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
-#                    HUD::MeshRenderer.material._OverlayTransparent = 0
-#                at time 0.3
-#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
-#                    HUD::MeshRenderer.material._OverlayTransparent = 1
-#            # This is a time-based transition. It'll happen after the number of seconds specified.
-#            goto LifeBarOut at time 16.6667
-#        state LifeBarOut
-#            do
-#                at time 0
-#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -1)
-#                    HUD::MeshRenderer.material._OverlayTransparent = 1
-#                at time 0.3
-#                    HUD::MeshRenderer.material._OverlayTex_ST = vec4(1, 1, 0.4, -2.2)
-#                    HUD::MeshRenderer.material._OverlayTransparent = 0
-#            goto LifeBarIn at time 1000
-#
-#    layer EnableHUD
-#        initial state HUDOff
-#            do
-#                HUD::Transform.m_IsActive = 0
-#            goto HUDOn if IsLocal
-#        state HUDOn
-#            do
-#                HUD::Transform.m_IsActive = 1
+    additive layer TailSwish
+        initial state TailSwishOn
+            loop do
+                at time 0.
+                    Tail_2::Transform.localEulerAnglesRaw.z = 3.25703 curve(-17.9473, -17.9473)
+                    Tail_4::Transform.localEulerAnglesRaw.z = -3.63321 curve(-25.7805, -25.7805)
+                    Tail_6::Transform.localEulerAnglesRaw.z = -13.5705 curve(-23.8142, -23.8142)
+                    Tail_8::Transform.localEulerAnglesRaw.z = -17.5485 curve(4.90953, 4.90953)
+                at time 1.13333
+                    Tail_2::Transform.localEulerAnglesRaw.z = -9.04968 curve(3.06607, 3.06607)
+                    Tail_4::Transform.localEulerAnglesRaw.z = -8.84352 curve(19.4801, 19.4801)
+                    Tail_6::Transform.localEulerAnglesRaw.z = -3.06182 curve(36.5213, 36.5213)
+                    Tail_8::Transform.localEulerAnglesRaw.z = 10.8043 curve(29.3747, 29.3747)
+                at time 2.26667
+                    Tail_2::Transform.localEulerAnglesRaw.z = 5.79265 curve(14.8813, 14.8813)
+                    Tail_4::Transform.localEulerAnglesRaw.z = 12.4767 curve(6.3003, 6.3003)
+                    Tail_6::Transform.localEulerAnglesRaw.z = 16.6323 curve(-12.7071, -12.7071)
+                    Tail_8::Transform.localEulerAnglesRaw.z = 6.74419 curve(-34.2843, -34.2843)
+                at time 3.4
+                    Tail_2::Transform.localEulerAnglesRaw.z = 3.25703 curve(-17.9473, -17.9473)
+                    Tail_4::Transform.localEulerAnglesRaw.z = -3.63321 curve(-25.7805, -25.7805)
+                    Tail_6::Transform.localEulerAnglesRaw.z = -13.5705 curve(-23.8142, -23.8142)
+                    Tail_8::Transform.localEulerAnglesRaw.z = -17.5485 curve(4.90953, 4.90953)
+            goto TailSwishOff if !TailSwish
+        state TailSwishOff
+            do
+                Tail_2::Transform.localEulerAnglesRaw.z = 0
+                Tail_4::Transform.localEulerAnglesRaw.z = 0
+                Tail_6::Transform.localEulerAnglesRaw.z = 0
+                Tail_8::Transform.localEulerAnglesRaw.z = 0
+            goto TailSwishOn if TailSwish
+
+    layer Hoverboard
+        initial state HoverboardOff
+            do
+                Hoverboard::GameObject.m_IsActive = 0
+            goto HoverboardOn if Hoverboard && GroundDistance > 0.5
+        state HoverboardOn
+            do
+                Hoverboard::GameObject.m_IsActive = 1
+            goto HoverboardOff if !(Hoverboard && GroundDistance > 0.5)
