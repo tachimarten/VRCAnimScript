@@ -37,6 +37,25 @@ namespace VRCAnimScript {
 
         List<string> materializedAssetPaths;
 
+        private static Dictionary<string, PropertyAbbreviation> mPropertyAbbreviations;
+
+        private static Dictionary<string, PropertyAbbreviation> PropertyAbbreviations {
+            get {
+                if (mPropertyAbbreviations == null) {
+                    mPropertyAbbreviations = new Dictionary<string, PropertyAbbreviation>();
+                    mPropertyAbbreviations.Add("active",
+                        new PropertyAbbreviation("GameObject", "m_IsActive"));
+                    mPropertyAbbreviations.Add("rotation",
+                        new PropertyAbbreviation("Transform", "localEulerAnglesRaw"));
+                    mPropertyAbbreviations.Add("scale",
+                        new PropertyAbbreviation("Transform", "m_LocalScale"));
+                    mPropertyAbbreviations.Add("materials",
+                        new PropertyAbbreviation("SkinnedMeshRenderer", "m_Materials"));
+                }
+                return mPropertyAbbreviations;
+            }
+        }
+
         public Materializer(Ast.Root root) {
             this.root = root;
 
@@ -97,48 +116,64 @@ namespace VRCAnimScript {
         }
 
         public void Materialize() {
-            string paramsAssetPath = MaterializeParams();
-            string mainMenuAssetPath = MaterializeMenu();
+            CompiledParams compiledParams = MaterializeParams();
+            string mainMenuAssetPath = MaterializeMenu(compiledParams);
             string actionControllerActionPath =
                 MaterializeController(root.actionController, "Action");
             string fxControllerActionPath = MaterializeController(root.fxController, "FX");
+
             ApplyMaterializedAssetsToAvatar(
-                paramsAssetPath,
+                compiledParams.assetPath,
                 mainMenuAssetPath,
                 actionControllerActionPath,
                 fxControllerActionPath);
         }
 
-        private string MaterializeParams() {
+        private CompiledParams MaterializeParams() {
             Ast.Param[] allParams = root.allParams;
+
             var vrcParams = new VRCExpressionParameters();
+            var paramTypes = new Dictionary<string, VRCExpressionParameters.ValueType>();
 
             vrcParams.parameters = new VRCExpressionParameters.Parameter[allParams.Length];
             for (int i = 0; i < allParams.Length; i++) {
                 Ast.Param param = allParams[i];
-                var vrcParam = new VRCExpressionParameters.Parameter();
-                vrcParam.name = param.name;
-                vrcParam.saved = param.saved;
 
+                VRCExpressionParameters.ValueType valueType;
+                float defaultValue;
                 if (param is Ast.BoolParam) {
                     var boolParam = (Ast.BoolParam)param;
-                    vrcParam.valueType = VRCExpressionParameters.ValueType.Bool;
-                    vrcParam.defaultValue = boolParam.initialValue ? 1.0f : 0.0f;
+                    valueType = VRCExpressionParameters.ValueType.Bool;
+                    defaultValue = boolParam.initialValue ? 1.0f : 0.0f;
                 } else if (param is Ast.FloatParam) {
                     var floatParam = (Ast.FloatParam)param;
-                    vrcParam.valueType = VRCExpressionParameters.ValueType.Float;
-                    vrcParam.defaultValue = (float)floatParam.initialValue;
+                    valueType = VRCExpressionParameters.ValueType.Float;
+                    defaultValue = (float)floatParam.initialValue;
                 } else {
                     throw new Exception("Unknown parameter type");
                 }
 
+                if (paramTypes.ContainsKey(param.name))
+                    throw new Exception("Param " + param.name + " defined multiple times");
+                paramTypes.Add(param.name, valueType);
+
+                var vrcParam = new VRCExpressionParameters.Parameter();
+                vrcParam.name = param.name;
+                vrcParam.saved = param.saved;
+                vrcParam.valueType = valueType;
+                vrcParam.defaultValue = defaultValue;
                 vrcParams.parameters[i] = vrcParam;
             }
 
-            return MaterializeAsset(vrcParams, GenerateAssetName("Parameters"), "parameters");
+            string assetPath = MaterializeAsset(
+                vrcParams,
+                GenerateAssetName("Parameters"),
+                "parameters");
+
+            return new CompiledParams(paramTypes, assetPath);
         }
 
-        private string MaterializeMenu() {
+        private string MaterializeMenu(CompiledParams compiledParams) {
             Ast.Menu mainMenu = root.mainMenu;
             Ast.MenuItem[] menuItems = mainMenu.items;
 
@@ -157,9 +192,22 @@ namespace VRCAnimScript {
                 else
                     vrcMenuItem.icon = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
 
-                vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.Toggle;
                 vrcMenuItem.parameter = new VRCExpressionsMenu.Control.Parameter();
-                vrcMenuItem.parameter.name = menuItem.toggle;
+                vrcMenuItem.parameter.name = menuItem.param;
+
+                if (!compiledParams.paramTypes.ContainsKey(menuItem.param))
+                    throw new Exception("Menu item controls unknown parameter " + menuItem.param);
+
+                switch (compiledParams.paramTypes[menuItem.param]) {
+                case VRCExpressionParameters.ValueType.Bool:
+                    vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.Toggle;
+                    break;
+                case VRCExpressionParameters.ValueType.Float:
+                    vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.RadialPuppet;
+                    break;
+                default:
+                    throw new Exception("Unknown parameter value type");
+                }
 
                 vrcMenu.controls.Add(vrcMenuItem);
             }
@@ -202,65 +250,16 @@ namespace VRCAnimScript {
 
                 // Materialize states.
                 for (int stateIndex = 0; stateIndex < layer.states.Length; stateIndex++) {
-                    Ast.State state = layer.states[stateIndex];
-                    AnimatorState unityState = unityStateMachine.AddState(state.name);
-
-                    // Turn action layer on and off as appropriate.
-                    if (isAction) {
-                        var vrcPlayableLayerControl =
-                            unityState.AddStateMachineBehaviour<VRCPlayableLayerControl>();
-                        vrcPlayableLayerControl.layer =
-                            VRC_PlayableLayerControl.BlendableLayer.Action;
-                        vrcPlayableLayerControl.goalWeight = state.animation == null ? 0.0f : 1.0f;
-
-                        VRC_AnimatorTrackingControl.TrackingType trackingType;
-                        if (state.animation == null)
-                            trackingType = VRC_AnimatorTrackingControl.TrackingType.Tracking;
-                        else
-                            trackingType = VRC_AnimatorTrackingControl.TrackingType.Animation;
-
-                        var vrcAnimatorTrackingControl =
-                            unityState.AddStateMachineBehaviour<VRCAnimatorTrackingControl>();
-                        vrcAnimatorTrackingControl.trackingHead = trackingType;
-                        vrcAnimatorTrackingControl.trackingLeftHand = trackingType;
-                        vrcAnimatorTrackingControl.trackingRightHand = trackingType;
-                        vrcAnimatorTrackingControl.trackingHip = trackingType;
-                        vrcAnimatorTrackingControl.trackingLeftFoot = trackingType;
-                        vrcAnimatorTrackingControl.trackingRightFoot = trackingType;
-                        vrcAnimatorTrackingControl.trackingLeftFingers = trackingType;
-                        vrcAnimatorTrackingControl.trackingRightFingers = trackingType;
-                        vrcAnimatorTrackingControl.trackingEyes = trackingType;
-                        vrcAnimatorTrackingControl.trackingMouth = trackingType;
-                    }
-
-                    // Materialize animation.
-                    if (state.animation != null) {
-                        string animationPath = "";
-                        if (state.animation is Ast.InlineAnimation) {
-                            animationPath = MaterializeInlineAnimation(
-                                (Ast.InlineAnimation)state.animation,
-                                assetName,
-                                layer.name,
-                                state.name);
-                        } else if (state.animation is Ast.ExternalAnimation) {
-                            var external = (Ast.ExternalAnimation)state.animation;
-                            animationPath = GetAssetPath<AnimationClip>(external.name);
-
-                            if (animationPath == null) {
-                                string errorMessage = "Couldn't find external animation clip " +
-                                    external;
-                                Debug.LogWarning(errorMessage);
-                            }
-                        } else {
-                            throw new Exception("Unhandled animation type");
-                        }
-
-                        unityState.motion =
-                            AssetDatabase.LoadAssetAtPath<AnimationClip>(animationPath);
-                    }
-
+                    AnimatorState unityState = MaterializeState(
+                        layer.states[stateIndex],
+                        unityStateMachine,
+                        unityController,
+                        assetName,
+                        layerIndex,
+                        layer.name,
+                        isAction);
                     unityStates[stateIndex] = unityState;
-                    nameToUnityState.Add(state.name, unityState);
+                    nameToUnityState.Add(unityStates[stateIndex].name, unityState);
                 }
 
                 // Materialize transitions.
@@ -309,6 +308,104 @@ namespace VRCAnimScript {
             return assetPath;
         }
 
+        private AnimatorState MaterializeState(
+                Ast.State state,
+                AnimatorStateMachine unityStateMachine,
+                AnimatorController controller,
+                string controllerAssetName,
+                int layerIndex,
+                string layerName,
+                bool isAction) {
+            AnimatorState unityState;
+            BlendTree blendTree = null;
+            if (state is Ast.RegularState) {
+                unityState = unityStateMachine.AddState(state.name);
+            } else if (state is Ast.BlendState) {
+                unityState = controller.CreateBlendTreeInController(
+                    state.name, out blendTree, layerIndex);
+            } else
+                throw new Exception("Unknown state type");
+
+            // Turn action layer on and off as appropriate.
+            if (isAction) {
+                var vrcPlayableLayerControl =
+                    unityState.AddStateMachineBehaviour<VRCPlayableLayerControl>();
+                vrcPlayableLayerControl.layer = VRC_PlayableLayerControl.BlendableLayer.Action;
+
+                VRC_AnimatorTrackingControl.TrackingType trackingType;
+                if (StateHasAnimations(state)) {
+                    trackingType = VRC_AnimatorTrackingControl.TrackingType.Animation;
+                    vrcPlayableLayerControl.goalWeight = 1.0f;
+                } else {
+                    trackingType = VRC_AnimatorTrackingControl.TrackingType.Tracking;
+                    vrcPlayableLayerControl.goalWeight = 0.0f;
+                }
+
+                var vrcAnimatorTrackingControl =
+                    unityState.AddStateMachineBehaviour<VRCAnimatorTrackingControl>();
+                vrcAnimatorTrackingControl.trackingHead = trackingType;
+                vrcAnimatorTrackingControl.trackingLeftHand = trackingType;
+                vrcAnimatorTrackingControl.trackingRightHand = trackingType;
+                vrcAnimatorTrackingControl.trackingHip = trackingType;
+                vrcAnimatorTrackingControl.trackingLeftFoot = trackingType;
+                vrcAnimatorTrackingControl.trackingRightFoot = trackingType;
+                vrcAnimatorTrackingControl.trackingLeftFingers = trackingType;
+                vrcAnimatorTrackingControl.trackingRightFingers = trackingType;
+                vrcAnimatorTrackingControl.trackingEyes = trackingType;
+                vrcAnimatorTrackingControl.trackingMouth = trackingType;
+            }
+
+            // Materialize animation.
+
+            if (state is Ast.RegularState) {
+                Ast.RegularState regularState = (Ast.RegularState)state;
+                if (regularState.animation != null) {
+                    unityState.motion = MaterializeAnimation(
+                        regularState.animation, controllerAssetName, layerName, state.name);
+                }
+                return unityState;
+            }
+
+            if (state is Ast.BlendState) {
+                Ast.BlendState blendState = (Ast.BlendState)state;
+                foreach (Ast.BlendStateKeyframe keyframe in blendState.keyframes) {
+                    Motion motion = MaterializeAnimation(
+                        keyframe.animation, controllerAssetName, layerName, state.name);
+                    blendTree.AddChild(motion, (float)keyframe.time);
+                }
+                return unityState;
+            }
+
+            throw new Exception("Unknown state type");
+        }
+
+        private Motion MaterializeAnimation(
+                Ast.Animation animation,
+                string controllerAssetName,
+                string layerName,
+                string stateName) {
+            string animationPath = "";
+            if (animation is Ast.InlineAnimation) {
+                animationPath = MaterializeInlineAnimation(
+                    (Ast.InlineAnimation)animation,
+                    controllerAssetName,
+                    layerName,
+                    stateName);
+            } else if (animation is Ast.ExternalAnimation) {
+                var external = (Ast.ExternalAnimation)animation;
+                animationPath = GetAssetPath<AnimationClip>(external.name);
+
+                if (animationPath == null) {
+                    string errorMessage = "Couldn't find external animation clip " + external;
+                    Debug.LogWarning(errorMessage);
+                }
+            } else {
+                throw new Exception("Unhandled animation type");
+            }
+
+            return AssetDatabase.LoadAssetAtPath<AnimationClip>(animationPath);
+        }
+
         private void MaterializeParamTransition(
                 Ast.ParamTransitionCondition paramCondition,
                 AnimatorState source,
@@ -345,22 +442,22 @@ namespace VRCAnimScript {
                         paramType = AnimatorControllerParameterType.Float;
 
                         switch (floatParamLiteral.op) {
-                        case Compiler.FloatRelationalOperator.Less:
-                            conditionMode = AnimatorConditionMode.Less;
-                            testValue = floatParamLiteral.value;
-                            break;
-                        case Compiler.FloatRelationalOperator.Greater:
-                            conditionMode = AnimatorConditionMode.Greater;
-                            testValue = floatParamLiteral.value;
-                            break;
-                        case Compiler.FloatRelationalOperator.LessEqual:
-                            conditionMode = AnimatorConditionMode.Less;
-                            testValue = floatParamLiteral.value + FLOAT_QUANTUM;
-                            break;
-                        case Compiler.FloatRelationalOperator.GreaterEqual:
-                            conditionMode = AnimatorConditionMode.Greater;
-                            testValue = floatParamLiteral.value - FLOAT_QUANTUM;
-                            break;
+                            case Compiler.FloatRelationalOperator.Less:
+                                conditionMode = AnimatorConditionMode.Less;
+                                testValue = floatParamLiteral.value;
+                                break;
+                            case Compiler.FloatRelationalOperator.Greater:
+                                conditionMode = AnimatorConditionMode.Greater;
+                                testValue = floatParamLiteral.value;
+                                break;
+                            case Compiler.FloatRelationalOperator.LessEqual:
+                                conditionMode = AnimatorConditionMode.Less;
+                                testValue = floatParamLiteral.value + FLOAT_QUANTUM;
+                                break;
+                            case Compiler.FloatRelationalOperator.GreaterEqual:
+                                conditionMode = AnimatorConditionMode.Greater;
+                                testValue = floatParamLiteral.value - FLOAT_QUANTUM;
+                                break;
                         }
                     } else {
                         throw new Exception("Unknown param literal type");
@@ -415,6 +512,15 @@ namespace VRCAnimScript {
                 return;
             }
 
+            if (expression is Ast.BoolExpression) {
+                EditorCurveBinding binding = new EditorCurveBinding();
+                binding.path = path;
+                binding.type = type;
+                binding.propertyName = propertyName;
+                iterator(binding, ((Ast.BoolExpression)expression).value ? 1.0f : 0.0f);
+                return;
+            }
+
             if (expression is Ast.VectorLiteralExpression) {
                 var vectorLiteralExpression = (Ast.VectorLiteralExpression)expression;
                 for (int i = 0; i < vectorLiteralExpression.elements.Length; i++) {
@@ -429,25 +535,6 @@ namespace VRCAnimScript {
             }
 
             throw new Exception("Unhandled expression type");
-        }
-
-        private string PropertyToString(Ast.PropertyComponent[] propertyComponents) {
-            string result = "";
-            for (int i = 0; i < propertyComponents.Length; i++) {
-                Ast.PropertyComponent propertyComponent = propertyComponents[i];
-                if (propertyComponent is Ast.NumberPropertyComponent) {
-                    // Automatically add `.Array.data`.
-                    result += ".Array.data[" +
-                        ((Ast.NumberPropertyComponent)propertyComponent).value + "]";
-                } else if (propertyComponent is Ast.NamePropertyComponent) {
-                    if (i > 0)
-                        result += ".";
-                    result += ((Ast.NamePropertyComponent)propertyComponent).name;
-                } else {
-                    throw new Exception("Unhandled property component type");
-                }
-            }
-            return result;
         }
 
         private string MaterializeInlineAnimation(
@@ -480,22 +567,52 @@ namespace VRCAnimScript {
                         continue;
                     }
 
+                    string componentName;
+                    string propertyPath = "";
+                    var firstPropertyComponent = (Ast.NamePropertyComponent)
+                        frameAction.property[0];
+                    if (PropertyAbbreviations.ContainsKey(firstPropertyComponent.name)) {
+                        PropertyAbbreviation abbreviation =
+                            PropertyAbbreviations[firstPropertyComponent.name];
+                        componentName = abbreviation.component;
+                        propertyPath = abbreviation.property;
+                    } else {
+                        componentName = firstPropertyComponent.name;
+                    }
+
+                    for (int componentIndex = 1;
+                            componentIndex < frameAction.property.Length;
+                            componentIndex++) {
+                        Ast.PropertyComponent propertyComponent =
+                            frameAction.property[componentIndex];
+                        if (propertyComponent is Ast.NumberPropertyComponent) {
+                            // Automatically add `.Array.data`.
+                            propertyPath += ".Array.data[" +
+                                ((Ast.NumberPropertyComponent)propertyComponent).value + "]";
+                        } else if (propertyComponent is Ast.NamePropertyComponent) {
+                            if (propertyPath.Length > 0)
+                                propertyPath += ".";
+                            propertyPath += ((Ast.NamePropertyComponent)propertyComponent).name;
+                        } else {
+                            throw new Exception("Unhandled property component type");
+                        }
+                    }
+
                     // Figure out which component we're targeting.
                     Type componentType = null;
-                    if (frameAction.component.Equals("GameObject")) {
+                    if (componentName.Equals("GameObject")) {
                         componentType = typeof(GameObject);
                     } else {
                         Component[] allComponents = gameObject.GetComponents<Component>();
                         foreach (Component component in allComponents) {
-                            if (BaseNameOfType(component.GetType()).Equals(frameAction.component)) {
+                            if (BaseNameOfType(component.GetType()).Equals(componentName)) {
                                 componentType = component.GetType();
                                 break;
                             }
                         }
                     }
                     if (componentType == null) {
-                        Debug.LogWarning("Failed to find component of type " +
-                            frameAction.component);
+                        Debug.LogWarning("Failed to find component of type " + componentName);
                         continue;
                     }
 
@@ -523,7 +640,7 @@ namespace VRCAnimScript {
                         } else {
                             var binding = new EditorCurveBinding();
                             binding.path = GetRootObjectRelativePath(gameObject);
-                            binding.propertyName = PropertyToString(frameAction.property);
+                            binding.propertyName = propertyPath;
                             binding.type = componentType;
 
                             ObjectReferenceKeyframe keyframe;
@@ -542,7 +659,7 @@ namespace VRCAnimScript {
                         IterateBindingsForExpression(
                             frameAction.expression,
                             GetRootObjectRelativePath(gameObject),
-                            PropertyToString(frameAction.property),
+                            propertyPath,
                             componentType,
                             (EditorCurveBinding binding, float value) => {
                                 Keyframe keyframe = new Keyframe((float)frame.time, value);
@@ -619,6 +736,44 @@ namespace VRCAnimScript {
 
         public void LogAssetPaths() {
             Debug.Log("Created assets: " + String.Join(", ", materializedAssetPaths.ToArray()));
+        }
+
+        private static bool StateHasAnimations(Ast.State state) {
+            if (state is Ast.RegularState) {
+                var regularState = (Ast.RegularState)state;
+                return regularState.animation != null;
+            }
+            if (state is Ast.BlendState) {
+                var blendState = (Ast.BlendState)state;
+                foreach (Ast.BlendStateKeyframe keyframe in blendState.keyframes) {
+                    if (keyframe.animation != null)
+                        return true;
+                }
+                return false;
+            }
+            throw new Exception("Unknown state type");
+        }
+    }
+
+    class CompiledParams {
+        public readonly Dictionary<string, VRCExpressionParameters.ValueType> paramTypes;
+        public readonly string assetPath;
+
+        public CompiledParams(
+                Dictionary<string, VRCExpressionParameters.ValueType> paramTypes,
+                string assetPath) {
+            this.paramTypes = paramTypes;
+            this.assetPath = assetPath;
+        }
+    }
+
+    class PropertyAbbreviation {
+        public string component;
+        public string property;
+
+        public PropertyAbbreviation(string component, string property) {
+            this.component = component;
+            this.property = property;
         }
     }
 
@@ -772,7 +927,7 @@ namespace VRCAnimScript {
                 // Literals
                 if (expression is Ast.SingleTestBooleanExpression) {
                     Literal literal = null;
-                    
+
                     if (expression is Ast.ParamBooleanExpression) {
                         literal = new BoolParamLiteral();
                     } else if (expression is Ast.RelationalBooleanExpression) {
@@ -781,18 +936,18 @@ namespace VRCAnimScript {
                         floatLiteral.value = relationalExpression.value;
 
                         switch (relationalExpression.op) {
-                        case Ast.RelationalOperator.Greater:
-                            floatLiteral.op = FloatRelationalOperator.Greater;
-                            break;
-                        case Ast.RelationalOperator.Less:
-                            floatLiteral.op = FloatRelationalOperator.Less;
-                            break;
-                        case Ast.RelationalOperator.GreaterEqual:
-                            floatLiteral.op = FloatRelationalOperator.GreaterEqual;
-                            break;
-                        case Ast.RelationalOperator.LessEqual:
-                            floatLiteral.op = FloatRelationalOperator.LessEqual;
-                            break;
+                            case Ast.RelationalOperator.Greater:
+                                floatLiteral.op = FloatRelationalOperator.Greater;
+                                break;
+                            case Ast.RelationalOperator.Less:
+                                floatLiteral.op = FloatRelationalOperator.Less;
+                                break;
+                            case Ast.RelationalOperator.GreaterEqual:
+                                floatLiteral.op = FloatRelationalOperator.GreaterEqual;
+                                break;
+                            case Ast.RelationalOperator.LessEqual:
+                                floatLiteral.op = FloatRelationalOperator.LessEqual;
+                                break;
                         }
 
                         literal = floatLiteral;
@@ -863,24 +1018,24 @@ namespace VRCAnimScript {
                         negatedExpression.paramName = origExpression.paramName;
 
                         switch (origExpression.op) {
-                        case Ast.RelationalOperator.Equal:
-                            negatedExpression.op = Ast.RelationalOperator.NotEqual;
-                            break;
-                        case Ast.RelationalOperator.NotEqual:
-                            negatedExpression.op = Ast.RelationalOperator.Equal;
-                            break;
-                        case Ast.RelationalOperator.Less:
-                            negatedExpression.op = Ast.RelationalOperator.GreaterEqual;
-                            break;
-                        case Ast.RelationalOperator.Greater:
-                            negatedExpression.op = Ast.RelationalOperator.LessEqual;
-                            break;
-                        case Ast.RelationalOperator.LessEqual:
-                            negatedExpression.op = Ast.RelationalOperator.Greater;
-                            break;
-                        case Ast.RelationalOperator.GreaterEqual:
-                            negatedExpression.op = Ast.RelationalOperator.Less;
-                            break;
+                            case Ast.RelationalOperator.Equal:
+                                negatedExpression.op = Ast.RelationalOperator.NotEqual;
+                                break;
+                            case Ast.RelationalOperator.NotEqual:
+                                negatedExpression.op = Ast.RelationalOperator.Equal;
+                                break;
+                            case Ast.RelationalOperator.Less:
+                                negatedExpression.op = Ast.RelationalOperator.GreaterEqual;
+                                break;
+                            case Ast.RelationalOperator.Greater:
+                                negatedExpression.op = Ast.RelationalOperator.LessEqual;
+                                break;
+                            case Ast.RelationalOperator.LessEqual:
+                                negatedExpression.op = Ast.RelationalOperator.Greater;
+                                break;
+                            case Ast.RelationalOperator.GreaterEqual:
+                                negatedExpression.op = Ast.RelationalOperator.Less;
+                                break;
                         }
 
                         return Disjunction.FromAst(negatedExpression);

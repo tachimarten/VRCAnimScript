@@ -145,8 +145,8 @@ namespace VRCAnimScript {
                     item.icon = ExpectMaybeQuotedString();
                     continue;
                 }
-                if (ConsumeKeyword("toggle")) {
-                    item.toggle = ExpectMaybeQuotedString();
+                if (ConsumeKeyword("controls")) {
+                    item.param = ExpectMaybeQuotedString();
                     continue;
                 }
                 break;
@@ -191,10 +191,25 @@ namespace VRCAnimScript {
 
         State ParseState() {
             bool initial = ConsumeKeyword("initial");
+
+            State state;
+            if ((state = ParseRegularState(initial)) != null)
+                return state;
+            if ((state = ParseBlendState(initial)) != null)
+                return state;
+
+            if (initial) {
+                throw new ParseException("Expected \"state\" or \"blend\" but found " + nextToken,
+                    tokenizer);
+            }
+            return null;
+        }
+
+        RegularState ParseRegularState(bool initial) {
             if (!ConsumeKeyword("state"))
                 return null;
 
-            State state = new State();
+            RegularState state = new RegularState();
             state.initial = initial;
             state.name = ExpectMaybeQuotedString();
 
@@ -217,6 +232,54 @@ namespace VRCAnimScript {
 
             state.transitions = stateTransitions.ToArray();
             return state;
+        }
+
+        BlendState ParseBlendState(bool initial) {
+            if (!ConsumeKeyword("blend"))
+                return null;
+
+            string name = ConsumeMaybeQuotedString();
+
+            ExpectPunctuation("(");
+            string param = ConsumeMaybeQuotedString();
+            ExpectPunctuation(")");
+
+            var keyframes = new List<BlendStateKeyframe>();
+            var transitions = new List<StateTransition>();
+
+            while (true) {
+                BlendStateKeyframe keyframe;
+                StateTransition transition;
+                if ((keyframe = ParseBlendStateKeyframe()) != null) {
+                    keyframes.Add(keyframe);
+                    continue;
+                }
+                if ((transition = ParseStateTransition()) != null) {
+                    transitions.Add(transition);
+                    continue;
+                }
+
+                break;
+            }
+
+            BlendState blendState = new BlendState();
+            blendState.initial = initial;
+            blendState.name = name;
+            blendState.param = param;
+            blendState.keyframes = keyframes.ToArray();
+            blendState.transitions = transitions.ToArray();
+            return blendState;
+        }
+
+        BlendStateKeyframe ParseBlendStateKeyframe() {
+            if (!ConsumeKeyword("at"))
+                return null;
+            ExpectKeyword("value");
+
+            BlendStateKeyframe keyframe = new BlendStateKeyframe();
+            keyframe.time = ExpectIntOrFloatLiteral();;
+            keyframe.animation = ParseAnimation();
+            return keyframe;
         }
 
         Animation ParseAnimation() {
@@ -291,20 +354,22 @@ namespace VRCAnimScript {
             FrameAction action = new FrameAction();
 
             List<string> doubleColonDelimited = new List<string>();
-            doubleColonDelimited.Add(ExpectMaybeQuotedString());
-            while (ConsumePunctuation("::"))
+            while (IsMaybeQuotedString() && DoubleColonIsNext()) {
                 doubleColonDelimited.Add(ExpectMaybeQuotedString());
-            string component = doubleColonDelimited[doubleColonDelimited.Count - 1];
-            doubleColonDelimited.RemoveAt(doubleColonDelimited.Count - 1);
+                ExpectPunctuation("::");
+            }
 
             var propertyComponents = new List<PropertyComponent>();
-            PropertyComponent propertyComponent;
+            PropertyComponent propertyComponent = ParseNamePropertyComponent();
+            if (propertyComponent == null)
+                throw new ParseException("Expected property component", tokenizer);
+            propertyComponents.Add(propertyComponent);
+
             while ((propertyComponent = ParsePropertyComponent()) != null)
                 propertyComponents.Add(propertyComponent);
 
-            action.property = propertyComponents.ToArray();
             action.objectPath = doubleColonDelimited.ToArray();
-            action.component = component;
+            action.property = propertyComponents.ToArray();
 
             ExpectPunctuation("=");
 
@@ -323,24 +388,20 @@ namespace VRCAnimScript {
 
         PropertyComponent ParsePropertyComponent() {
             PropertyComponent propertyComponent;
-            if ((propertyComponent = ParseNamePropertyComponent()) != null)
-                return propertyComponent;
-            if ((propertyComponent = ParseNumberPropertyComponent()) != null)
-                return propertyComponent;
+            if (ConsumePunctuation("."))
+                return ParseNamePropertyComponent();
+            if (ConsumePunctuation("["))
+                return ParseNumberPropertyComponent();
             return null;
         }
 
         NamePropertyComponent ParseNamePropertyComponent() {
-            if (!ConsumePunctuation("."))
-                return null;
             var namePropertyComponent = new NamePropertyComponent();
             namePropertyComponent.name = ExpectMaybeQuotedString();
             return namePropertyComponent;
         }
 
         NumberPropertyComponent ParseNumberPropertyComponent() {
-            if (!ConsumePunctuation("["))
-                return null;
             var numberPropertyComponent = new NumberPropertyComponent();
             numberPropertyComponent.value = ExpectIntLiteral();
             ExpectPunctuation("]");
@@ -349,6 +410,8 @@ namespace VRCAnimScript {
 
         Expression ParseExpression() {
             Expression expression;
+            if ((expression = ParseBoolExpression()) != null)
+                return expression;
             if ((expression = ParseIntExpression()) != null)
                 return expression;
             if ((expression = ParseFloatExpression()) != null)
@@ -357,6 +420,22 @@ namespace VRCAnimScript {
                 return expression;
             if ((expression = ParseAssetExpression()) != null)
                 return expression;
+            return null;
+        }
+
+        BoolExpression ParseBoolExpression() {
+            if (ConsumeKeyword("true")) {
+                BoolExpression boolExpression = new BoolExpression();
+                boolExpression.value = true;
+                return boolExpression;
+            }
+
+            if (ConsumeKeyword("false")) {
+                BoolExpression boolExpression = new BoolExpression();
+                boolExpression.value = false;
+                return boolExpression;
+            }
+
             return null;
         }
 
@@ -502,26 +581,26 @@ namespace VRCAnimScript {
 
             RelationalOperator op;
             switch (((PunctuationToken)nextToken).Value) {
-            case "==":
-                op = RelationalOperator.Equal;
-                break;
-            case "!=":
-                op = RelationalOperator.NotEqual;
-                break;
-            case "<":
-                op = RelationalOperator.Less;
-                break;
-            case ">":
-                op = RelationalOperator.Greater;
-                break;
-            case "<=":
-                op = RelationalOperator.LessEqual;
-                break;
-            case ">=":
-                op = RelationalOperator.GreaterEqual;
-                break;
-            default:
-                return lhs;
+                case "==":
+                    op = RelationalOperator.Equal;
+                    break;
+                case "!=":
+                    op = RelationalOperator.NotEqual;
+                    break;
+                case "<":
+                    op = RelationalOperator.Less;
+                    break;
+                case ">":
+                    op = RelationalOperator.Greater;
+                    break;
+                case "<=":
+                    op = RelationalOperator.LessEqual;
+                    break;
+                case ">=":
+                    op = RelationalOperator.GreaterEqual;
+                    break;
+                default:
+                    return lhs;
             }
             GetToken();
 
@@ -567,6 +646,10 @@ namespace VRCAnimScript {
                 return true;
             }
             return false;
+        }
+
+        private bool IsMaybeQuotedString() {
+            return (nextToken is StringLiteralToken) || (nextToken is KeywordToken);
         }
 
         private string ConsumeMaybeQuotedString() {
@@ -660,6 +743,12 @@ namespace VRCAnimScript {
             return punctuation.Value == "." || punctuation.Value == "::" ||
                 punctuation.Value == "[";
         }
+
+        private bool DoubleColonIsNext() {
+            if (!(lookaheadToken is PunctuationToken))
+                return false;
+            return ((PunctuationToken)lookaheadToken).Value == "::";
+        }
     }
 
     namespace Ast {
@@ -697,7 +786,7 @@ namespace VRCAnimScript {
         public class MenuItem {
             public string name;
             public string icon;
-            public string toggle;
+            public string param;
         }
 
         public class ControllerSection {
@@ -710,11 +799,24 @@ namespace VRCAnimScript {
             public bool additive;
         }
 
-        public class State {
+        public abstract class State {
             public string name;
             public bool initial;
-            public Animation animation;
             public StateTransition[] transitions;
+        }
+
+        public class RegularState : State {
+            public Animation animation;
+        }
+
+        public class BlendState : State {
+            public string param;
+            public BlendStateKeyframe[] keyframes;
+        }
+
+        public class BlendStateKeyframe {
+            public double time;
+            public Animation animation;
         }
 
         public abstract class Animation { }
@@ -735,7 +837,6 @@ namespace VRCAnimScript {
 
         public class FrameAction {
             public string[] objectPath;
-            public string component;
             public PropertyComponent[] property;
             public Expression expression;
             public double? prevTangent;
@@ -753,6 +854,10 @@ namespace VRCAnimScript {
         }
 
         public abstract class Expression { }
+
+        public class BoolExpression : Expression {
+            public bool value;
+        }
 
         public class IntExpression : Expression {
             public int value;
@@ -786,13 +891,13 @@ namespace VRCAnimScript {
             public double time;
         }
 
-        public abstract class BooleanExpression {}
+        public abstract class BooleanExpression { }
 
         public abstract class SingleTestBooleanExpression : BooleanExpression {
             public string paramName;
         }
 
-        public class ParamBooleanExpression : SingleTestBooleanExpression {}
+        public class ParamBooleanExpression : SingleTestBooleanExpression { }
 
         public class RelationalBooleanExpression : SingleTestBooleanExpression {
             public RelationalOperator op;

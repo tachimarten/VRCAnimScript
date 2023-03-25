@@ -245,5 +245,4 @@ namespace VRCAnimScript {
         }
     }
 
-}
-
+}   // end namespace VRCAnimScript

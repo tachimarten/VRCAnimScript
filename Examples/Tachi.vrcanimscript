@@ -23,28 +23,31 @@ saved param Geddan: bool = false
 saved param Pants: bool = true
 saved param TailSwish: bool = false
 saved param Hoverboard: bool = false
+saved param EyesClosed: float = 1.0
 param GroundDistance: float = 0.0
 
-# Declare your menu items here. Submenus and menu items other than toggles are currently
-# unsupported.
+# Declare your menu items here. The type of the item is inferred based on the type of the parameter
+# being controlled. Submenus are currently unsupported.
 menuitem Wrench
     icon item_sword
-    toggle Wrench
+    controls Wrench
 menuitem "ゲッダン"
     icon person_dance
-    toggle Geddan
+    controls Geddan
 menuitem "Float & Splat"
     icon hand_waving
-    toggle FloatAndSplat
+    controls FloatAndSplat
 menuitem Pants
     icon symbol_heart
-    toggle Pants
+    controls Pants
 menuitem TailSwish
     icon symbol_paw
-    toggle TailSwish
+    controls TailSwish
 menuitem Hoverboard
     icon symbol_magic
-    toggle Hoverboard
+    controls Hoverboard
+menuitem "Eyes Closed"
+    controls EyesClosed
 
 # Your action controller goes here.
 #
@@ -96,12 +99,29 @@ controller fx
                 #   Wrench::Transform.m_LocalScale.x = 0
                 #   Wrench::Transform.m_LocalScale.y = 0
                 #   Wrench::Transform.m_LocalScale.z = 0
-                Wrench::Transform.m_LocalScale = vec3(0, 0, 0)
+                #
+                # There are abbreviations you can use in place of `COMPONENT.PROPERTY`:
+                #
+                #  * `scale` is short for `Transform.m_LocalScale`.
+                #  * `rotation` is short for `Transform.localEulerAnglesRaw`.
+                #  * `active` is short for `GameObject.m_IsActive`.
+                #  * `materials` is short for `SkinnedMeshRenderer.m_Materials`.
+                #
+                # Each of these abbreviations can be projected from, so you can write
+                # `Wrench::materials[6] = (Material)myMaterial` and so forth.
+                Wrench::scale = vec3(0, 0, 0)
             goto WrenchOn if Wrench
         state WrenchOn
             do
-                Wrench::Transform.m_LocalScale = vec3(1, 1, 1)
+                Wrench::scale = vec3(1, 1, 1)
             goto WrenchOff if !Wrench
+
+        layer Wrench
+            loop
+                if !Wrench
+                    Wrench::scale = vec3(0)
+                else
+                    Wrench::scale = vec3(1)
 
     layer Pants
         initial state PantsOn
@@ -109,53 +129,62 @@ controller fx
                 # If you're familiar with Unity animation paths, you may be expecting to write this
                 # as `m_Materials.Array.data[6]`. In VRCAnimScript, the `.Array.data` is implied, so
                 # you can just write `m_Materials[6]`.
-                Body::SkinnedMeshRenderer.m_Materials[6] = (Material)TachiHidden
-                Body::SkinnedMeshRenderer.m_Materials[7] = (Material)"T_Tachi_ClothesHair.004"
+                Body::materials[6] = (Material)TachiHidden
+                Body::materials[7] = (Material)"T_Tachi_ClothesHair.004"
             goto PantsOff if !Pants
         state PantsOff
             do
-                Body::SkinnedMeshRenderer.m_Materials[6] = (Material)"T_Tachi_Body.008"
-                Body::SkinnedMeshRenderer.m_Materials[7] = (Material)TachiHidden
+                Body::materials[6] = (Material)"T_Tachi_Body.008"
+                Body::materials[7] = (Material)TachiHidden
             goto PantsOn if Pants
 
     additive layer TailSwish
         initial state TailSwishOn
             loop do
                 at time 0.
-                    Tail_2::Transform.localEulerAnglesRaw.z = 3.25703 curve(-17.9473, -17.9473)
-                    Tail_4::Transform.localEulerAnglesRaw.z = -3.63321 curve(-25.7805, -25.7805)
-                    Tail_6::Transform.localEulerAnglesRaw.z = -13.5705 curve(-23.8142, -23.8142)
-                    Tail_8::Transform.localEulerAnglesRaw.z = -17.5485 curve(4.90953, 4.90953)
+                    Tail_2::rotation.z = 3.25703 curve(-17.9473, -17.9473)
+                    Tail_4::rotation.z = -3.63321 curve(-25.7805, -25.7805)
+                    Tail_6::rotation.z = -13.5705 curve(-23.8142, -23.8142)
+                    Tail_8::rotation.z = -17.5485 curve(4.90953, 4.90953)
                 at time 1.13333
-                    Tail_2::Transform.localEulerAnglesRaw.z = -9.04968 curve(3.06607, 3.06607)
-                    Tail_4::Transform.localEulerAnglesRaw.z = -8.84352 curve(19.4801, 19.4801)
-                    Tail_6::Transform.localEulerAnglesRaw.z = -3.06182 curve(36.5213, 36.5213)
-                    Tail_8::Transform.localEulerAnglesRaw.z = 10.8043 curve(29.3747, 29.3747)
+                    Tail_2::rotation.z = -9.04968 curve(3.06607, 3.06607)
+                    Tail_4::rotation.z = -8.84352 curve(19.4801, 19.4801)
+                    Tail_6::rotation.z = -3.06182 curve(36.5213, 36.5213)
+                    Tail_8::rotation.z = 10.8043 curve(29.3747, 29.3747)
                 at time 2.26667
-                    Tail_2::Transform.localEulerAnglesRaw.z = 5.79265 curve(14.8813, 14.8813)
-                    Tail_4::Transform.localEulerAnglesRaw.z = 12.4767 curve(6.3003, 6.3003)
-                    Tail_6::Transform.localEulerAnglesRaw.z = 16.6323 curve(-12.7071, -12.7071)
-                    Tail_8::Transform.localEulerAnglesRaw.z = 6.74419 curve(-34.2843, -34.2843)
+                    Tail_2::rotation.z = 5.79265 curve(14.8813, 14.8813)
+                    Tail_4::rotation.z = 12.4767 curve(6.3003, 6.3003)
+                    Tail_6::rotation.z = 16.6323 curve(-12.7071, -12.7071)
+                    Tail_8::rotation.z = 6.74419 curve(-34.2843, -34.2843)
                 at time 3.4
-                    Tail_2::Transform.localEulerAnglesRaw.z = 3.25703 curve(-17.9473, -17.9473)
-                    Tail_4::Transform.localEulerAnglesRaw.z = -3.63321 curve(-25.7805, -25.7805)
-                    Tail_6::Transform.localEulerAnglesRaw.z = -13.5705 curve(-23.8142, -23.8142)
-                    Tail_8::Transform.localEulerAnglesRaw.z = -17.5485 curve(4.90953, 4.90953)
+                    Tail_2::rotation.z = 3.25703 curve(-17.9473, -17.9473)
+                    Tail_4::rotation.z = -3.63321 curve(-25.7805, -25.7805)
+                    Tail_6::rotation.z = -13.5705 curve(-23.8142, -23.8142)
+                    Tail_8::rotation.z = -17.5485 curve(4.90953, 4.90953)
             goto TailSwishOff if !TailSwish
         state TailSwishOff
             do
-                Tail_2::Transform.localEulerAnglesRaw.z = 0
-                Tail_4::Transform.localEulerAnglesRaw.z = 0
-                Tail_6::Transform.localEulerAnglesRaw.z = 0
-                Tail_8::Transform.localEulerAnglesRaw.z = 0
+                Tail_2::rotation.z = 0
+                Tail_4::rotation.z = 0
+                Tail_6::rotation.z = 0
+                Tail_8::rotation.z = 0
             goto TailSwishOn if TailSwish
 
     layer Hoverboard
         initial state HoverboardOff
             do
-                Hoverboard::GameObject.m_IsActive = 0
+                Hoverboard::active = false
             goto HoverboardOn if Hoverboard && GroundDistance > 0.5
         state HoverboardOn
             do
-                Hoverboard::GameObject.m_IsActive = 1
+                Hoverboard::active = true
             goto HoverboardOff if !(Hoverboard && GroundDistance > 0.5)
+
+    layer Eyelids
+        blend Eyelids(EyesClosed)
+            at value 0
+                do
+                    Body::SkinnedMeshRenderer.blendShape.EyesClosed = 0
+            at value 1
+                do
+                    Body::SkinnedMeshRenderer.blendShape.EyesClosed = 1
