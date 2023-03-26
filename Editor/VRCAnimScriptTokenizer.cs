@@ -97,7 +97,7 @@ namespace VRCAnimScript {
                 }
 
                 // Possibly doubled characters
-                if (":&|".Contains("" + c)) {
+                if (":&|=".Contains("" + c)) {
                     token += c;
                     reader.Read();
                     if (reader.Peek() == c) {
@@ -107,7 +107,7 @@ namespace VRCAnimScript {
                     return new PunctuationToken(token);
                 }
 
-                if ("=!*,-.()[]<>".Contains("" + c)) {
+                if ("!*,-.()[]<>".Contains("" + c)) {
                     token += c;
                     reader.Read();
                     return new PunctuationToken(token);

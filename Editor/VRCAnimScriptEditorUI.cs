@@ -51,6 +51,8 @@ namespace VRCAnimScript {
                         new PropertyAbbreviation("Transform", "m_LocalScale"));
                     mPropertyAbbreviations.Add("materials",
                         new PropertyAbbreviation("SkinnedMeshRenderer", "m_Materials"));
+                    mPropertyAbbreviations.Add("blendshapes",
+                        new PropertyAbbreviation("SkinnedMeshRenderer", "blendShape"));
                 }
                 return mPropertyAbbreviations;
             }
@@ -113,6 +115,16 @@ namespace VRCAnimScript {
                     return assetPath;
             }
             return null;
+        }
+
+        private VRC_AnimatorTrackingControl.TrackingType GetTrackingControl(
+                CFG.Node cfgNode,
+                int partIndex) {
+            if ((cfgNode.trackingMask & (1 << partIndex)) == 0)
+                return VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            if ((cfgNode.tracking & (1 << partIndex)) == 0)
+                return VRC_AnimatorTrackingControl.TrackingType.Animation;
+            return VRC_AnimatorTrackingControl.TrackingType.Tracking;
         }
 
         public void Materialize() {
@@ -186,11 +198,13 @@ namespace VRCAnimScript {
                 var vrcMenuItem = new VRCExpressionsMenu.Control();
                 vrcMenuItem.name = menuItem.name;
 
-                string texturePath = GetAssetPath<Texture2D>(menuItem.icon);
-                if (texturePath == null)
-                    Debug.LogWarning("Couldn't find menu item texture " + vrcMenuItem.icon);
-                else
-                    vrcMenuItem.icon = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                if (menuItem.icon != null) {
+                    string texturePath = GetAssetPath<Texture2D>(menuItem.icon);
+                    if (texturePath == null)
+                        Debug.LogWarning("Couldn't find menu item texture " + vrcMenuItem.icon);
+                    else
+                        vrcMenuItem.icon = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                }
 
                 vrcMenuItem.parameter = new VRCExpressionsMenu.Control.Parameter();
                 vrcMenuItem.parameter.name = menuItem.param;
@@ -199,14 +213,14 @@ namespace VRCAnimScript {
                     throw new Exception("Menu item controls unknown parameter " + menuItem.param);
 
                 switch (compiledParams.paramTypes[menuItem.param]) {
-                case VRCExpressionParameters.ValueType.Bool:
-                    vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.Toggle;
-                    break;
-                case VRCExpressionParameters.ValueType.Float:
-                    vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.RadialPuppet;
-                    break;
-                default:
-                    throw new Exception("Unknown parameter value type");
+                    case VRCExpressionParameters.ValueType.Bool:
+                        vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.Toggle;
+                        break;
+                    case VRCExpressionParameters.ValueType.Float:
+                        vrcMenuItem.type = VRCExpressionsMenu.Control.ControlType.RadialPuppet;
+                        break;
+                    default:
+                        throw new Exception("Unknown parameter value type");
                 }
 
                 vrcMenu.controls.Add(vrcMenuItem);
@@ -236,7 +250,9 @@ namespace VRCAnimScript {
                 // Create layer and state machine.
                 unityController.AddLayer(layer.name);
                 AnimatorControllerLayer[] unityLayers = unityController.layers;
-                AnimatorControllerLayer unityLayer = unityLayers[unityLayers.Length - 1];
+
+                int unityLayerIndex = unityLayers.Length - 1;
+                AnimatorControllerLayer unityLayer = unityLayers[unityLayerIndex];
                 AnimatorStateMachine unityStateMachine = unityLayer.stateMachine;
 
                 unityLayer.defaultWeight = 1.0f;
@@ -244,6 +260,10 @@ namespace VRCAnimScript {
                     unityLayer.blendingMode = AnimatorLayerBlendingMode.Additive;
                 else
                     unityLayer.blendingMode = AnimatorLayerBlendingMode.Override;
+
+                // Create the CFG. Compute tracking.
+                CFG.Graph cfg = new CFG.Graph(layer, isAction);
+                cfg.ComputeTrackingMasks();
 
                 AnimatorState[] unityStates = new AnimatorState[layer.states.Length];
                 var nameToUnityState = new Dictionary<string, AnimatorState>();
@@ -255,8 +275,9 @@ namespace VRCAnimScript {
                         unityStateMachine,
                         unityController,
                         assetName,
-                        layerIndex,
+                        unityLayerIndex,
                         layer.name,
+                        cfg,
                         isAction);
                     unityStates[stateIndex] = unityState;
                     nameToUnityState.Add(unityStates[stateIndex].name, unityState);
@@ -313,8 +334,9 @@ namespace VRCAnimScript {
                 AnimatorStateMachine unityStateMachine,
                 AnimatorController controller,
                 string controllerAssetName,
-                int layerIndex,
+                int unityLayerIndex,
                 string layerName,
+                CFG.Graph cfg,
                 bool isAction) {
             AnimatorState unityState;
             BlendTree blendTree = null;
@@ -322,7 +344,7 @@ namespace VRCAnimScript {
                 unityState = unityStateMachine.AddState(state.name);
             } else if (state is Ast.BlendState) {
                 unityState = controller.CreateBlendTreeInController(
-                    state.name, out blendTree, layerIndex);
+                    state.name, out blendTree, unityLayerIndex);
             } else
                 throw new Exception("Unknown state type");
 
@@ -332,27 +354,27 @@ namespace VRCAnimScript {
                     unityState.AddStateMachineBehaviour<VRCPlayableLayerControl>();
                 vrcPlayableLayerControl.layer = VRC_PlayableLayerControl.BlendableLayer.Action;
 
-                VRC_AnimatorTrackingControl.TrackingType trackingType;
-                if (StateHasAnimations(state)) {
-                    trackingType = VRC_AnimatorTrackingControl.TrackingType.Animation;
+                if (CFG.StateUtils.StateHasAnimations(state))
                     vrcPlayableLayerControl.goalWeight = 1.0f;
-                } else {
-                    trackingType = VRC_AnimatorTrackingControl.TrackingType.Tracking;
+                else
                     vrcPlayableLayerControl.goalWeight = 0.0f;
-                }
+            }
 
+            // Create playable layer control if necessary.
+            CFG.Node cfgNode = cfg.nodes[cfg.nodeNames[state.name]];
+            if (cfgNode.trackingMask != 0) {
                 var vrcAnimatorTrackingControl =
                     unityState.AddStateMachineBehaviour<VRCAnimatorTrackingControl>();
-                vrcAnimatorTrackingControl.trackingHead = trackingType;
-                vrcAnimatorTrackingControl.trackingLeftHand = trackingType;
-                vrcAnimatorTrackingControl.trackingRightHand = trackingType;
-                vrcAnimatorTrackingControl.trackingHip = trackingType;
-                vrcAnimatorTrackingControl.trackingLeftFoot = trackingType;
-                vrcAnimatorTrackingControl.trackingRightFoot = trackingType;
-                vrcAnimatorTrackingControl.trackingLeftFingers = trackingType;
-                vrcAnimatorTrackingControl.trackingRightFingers = trackingType;
-                vrcAnimatorTrackingControl.trackingEyes = trackingType;
-                vrcAnimatorTrackingControl.trackingMouth = trackingType;
+                vrcAnimatorTrackingControl.trackingHead = GetTrackingControl(cfgNode, 0);
+                vrcAnimatorTrackingControl.trackingLeftHand = GetTrackingControl(cfgNode, 1);
+                vrcAnimatorTrackingControl.trackingRightHand = GetTrackingControl(cfgNode, 2);
+                vrcAnimatorTrackingControl.trackingHip = GetTrackingControl(cfgNode, 3);
+                vrcAnimatorTrackingControl.trackingLeftFoot = GetTrackingControl(cfgNode, 4);
+                vrcAnimatorTrackingControl.trackingRightFoot = GetTrackingControl(cfgNode, 5);
+                vrcAnimatorTrackingControl.trackingLeftFingers = GetTrackingControl(cfgNode, 6);
+                vrcAnimatorTrackingControl.trackingRightFingers = GetTrackingControl(cfgNode, 7);
+                vrcAnimatorTrackingControl.trackingEyes = GetTrackingControl(cfgNode, 8);
+                vrcAnimatorTrackingControl.trackingMouth = GetTrackingControl(cfgNode, 9);
             }
 
             // Materialize animation.
@@ -360,8 +382,13 @@ namespace VRCAnimScript {
             if (state is Ast.RegularState) {
                 Ast.RegularState regularState = (Ast.RegularState)state;
                 if (regularState.animation != null) {
+                    string animationName = CreateInlineAnimationName(
+                        controllerAssetName,
+                        layerName,
+                        state.name,
+                        null);
                     unityState.motion = MaterializeAnimation(
-                        regularState.animation, controllerAssetName, layerName, state.name);
+                        regularState.animation, animationName);
                 }
                 return unityState;
             }
@@ -369,8 +396,12 @@ namespace VRCAnimScript {
             if (state is Ast.BlendState) {
                 Ast.BlendState blendState = (Ast.BlendState)state;
                 foreach (Ast.BlendStateKeyframe keyframe in blendState.keyframes) {
-                    Motion motion = MaterializeAnimation(
-                        keyframe.animation, controllerAssetName, layerName, state.name);
+                    string animationName = CreateInlineAnimationName(
+                        controllerAssetName,
+                        layerName,
+                        state.name,
+                        keyframe.time);
+                    Motion motion = MaterializeAnimation(keyframe.animation, animationName);
                     blendTree.AddChild(motion, (float)keyframe.time);
                 }
                 return unityState;
@@ -379,18 +410,12 @@ namespace VRCAnimScript {
             throw new Exception("Unknown state type");
         }
 
-        private Motion MaterializeAnimation(
-                Ast.Animation animation,
-                string controllerAssetName,
-                string layerName,
-                string stateName) {
+        private Motion MaterializeAnimation(Ast.Animation animation, string inlineAnimationName) {
             string animationPath = "";
             if (animation is Ast.InlineAnimation) {
                 animationPath = MaterializeInlineAnimation(
                     (Ast.InlineAnimation)animation,
-                    controllerAssetName,
-                    layerName,
-                    stateName);
+                    inlineAnimationName);
             } else if (animation is Ast.ExternalAnimation) {
                 var external = (Ast.ExternalAnimation)animation;
                 animationPath = GetAssetPath<AnimationClip>(external.name);
@@ -411,24 +436,24 @@ namespace VRCAnimScript {
                 AnimatorState source,
                 AnimatorState destination,
                 Dictionary<string, AnimatorControllerParameterType> allParameters) {
-            Compiler.Disjunction disjunction =
-                Compiler.Disjunction.FromAst(paramCondition.expression);
+            DNF.Disjunction disjunction =
+                DNF.Disjunction.FromAst(paramCondition.expression);
 
-            foreach (Compiler.Conjunction conjunction in disjunction.conjunctions) {
+            foreach (DNF.Conjunction conjunction in disjunction.conjunctions) {
                 AnimatorStateTransition unityTransition = source.AddTransition(destination);
 
                 // TODO: Make these customizable?
                 unityTransition.duration = 0.0f;
                 unityTransition.hasExitTime = false;
 
-                foreach (Compiler.Literal literal in conjunction.literals) {
+                foreach (DNF.Literal literal in conjunction.literals) {
                     AnimatorConditionMode conditionMode = AnimatorConditionMode.If;
                     double testValue = 0.0;
                     var paramType = AnimatorControllerParameterType.Bool;
 
-                    if (literal is Compiler.BoolParamLiteral) {
-                        Compiler.BoolParamLiteral boolParamLiteral =
-                            (Compiler.BoolParamLiteral)literal;
+                    if (literal is DNF.BoolParamLiteral) {
+                        DNF.BoolParamLiteral boolParamLiteral =
+                            (DNF.BoolParamLiteral)literal;
                         testValue = 0.0;
                         paramType = AnimatorControllerParameterType.Bool;
 
@@ -436,25 +461,25 @@ namespace VRCAnimScript {
                             conditionMode = AnimatorConditionMode.IfNot;
                         else
                             conditionMode = AnimatorConditionMode.If;
-                    } else if (literal is Compiler.FloatParamLiteral) {
-                        Compiler.FloatParamLiteral floatParamLiteral =
-                            (Compiler.FloatParamLiteral)literal;
+                    } else if (literal is DNF.FloatParamLiteral) {
+                        DNF.FloatParamLiteral floatParamLiteral =
+                            (DNF.FloatParamLiteral)literal;
                         paramType = AnimatorControllerParameterType.Float;
 
                         switch (floatParamLiteral.op) {
-                            case Compiler.FloatRelationalOperator.Less:
+                            case DNF.FloatRelationalOperator.Less:
                                 conditionMode = AnimatorConditionMode.Less;
                                 testValue = floatParamLiteral.value;
                                 break;
-                            case Compiler.FloatRelationalOperator.Greater:
+                            case DNF.FloatRelationalOperator.Greater:
                                 conditionMode = AnimatorConditionMode.Greater;
                                 testValue = floatParamLiteral.value;
                                 break;
-                            case Compiler.FloatRelationalOperator.LessEqual:
+                            case DNF.FloatRelationalOperator.LessEqual:
                                 conditionMode = AnimatorConditionMode.Less;
                                 testValue = floatParamLiteral.value + FLOAT_QUANTUM;
                                 break;
-                            case Compiler.FloatRelationalOperator.GreaterEqual:
+                            case DNF.FloatRelationalOperator.GreaterEqual:
                                 conditionMode = AnimatorConditionMode.Greater;
                                 testValue = floatParamLiteral.value - FLOAT_QUANTUM;
                                 break;
@@ -539,9 +564,7 @@ namespace VRCAnimScript {
 
         private string MaterializeInlineAnimation(
                 Ast.InlineAnimation animation,
-                string controllerName,
-                string layerName,
-                string stateName) {
+                string animationName) {
             AnimationClip unityAnimation = new AnimationClip();
 
             // Set loop time.
@@ -695,8 +718,25 @@ namespace VRCAnimScript {
                 AnimationUtility.SetObjectReferenceCurve(unityAnimation, KVP.Key, keyframes);
             }
 
-            string animationName = controllerName + "_" + layerName + "_" + stateName;
             return MaterializeAsset(unityAnimation, animationName, "animation", "anim");
+        }
+
+        private static string CreateInlineAnimationName(
+                string controllerName,
+                string layerName,
+                string stateName,
+                double? blendTime) {
+            string animationName = controllerName + "_" + layerName + "_" + stateName;
+            if (blendTime != null) {
+                string blendString = blendTime.ToString();
+                foreach (char ch in blendString) {
+                    if (Char.IsDigit(ch))
+                        animationName += ch;
+                    else
+                        animationName += '_';
+                }
+            }
+            return animationName;
         }
 
         private void ApplyMaterializedAssetsToAvatar(
@@ -736,22 +776,6 @@ namespace VRCAnimScript {
 
         public void LogAssetPaths() {
             Debug.Log("Created assets: " + String.Join(", ", materializedAssetPaths.ToArray()));
-        }
-
-        private static bool StateHasAnimations(Ast.State state) {
-            if (state is Ast.RegularState) {
-                var regularState = (Ast.RegularState)state;
-                return regularState.animation != null;
-            }
-            if (state is Ast.BlendState) {
-                var blendState = (Ast.BlendState)state;
-                foreach (Ast.BlendStateKeyframe keyframe in blendState.keyframes) {
-                    if (keyframe.animation != null)
-                        return true;
-                }
-                return false;
-            }
-            throw new Exception("Unknown state type");
         }
     }
 
@@ -857,34 +881,9 @@ namespace VRCAnimScript {
                 }
             }
         }
-
-#if false
-        [MenuItem("Tools/Dump Component")]
-        static void DumpComponent() {
-            if (!(Selection.activeObject is GameObject)) {
-                Debug.Log(Selection.activeObject.GetType());
-                return;
-            }
-
-            var gameObject = (GameObject)Selection.activeObject;
-            var avatarDescriptor = gameObject.GetComponent<VRCAvatarDescriptor>();
-
-            for (int i = 0; i < avatarDescriptor.baseAnimationLayers.Length; i++) {
-                string Desc = "" + i + ":";
-                VRCAvatarDescriptor.CustomAnimLayer layer = avatarDescriptor.baseAnimationLayers[i];
-                Desc += " enabled=" + layer.isEnabled;
-                Desc += " type=" + layer.type;
-                Desc += " animatorcontroller=" +
-                    (layer.animatorController == null ? "null" : "nonnull");
-                Desc += " mask=" + (layer.mask == null ? "null" : "nonnull");
-                Desc += " isdefault=" + layer.isDefault;
-                Debug.Log(Desc);
-            }
-        }
-#endif
     }
 
-    namespace Compiler {
+    namespace DNF {
 
         // Disjunctive normal form
         class Disjunction {
@@ -1005,7 +1004,7 @@ namespace VRCAnimScript {
                     var notExpression = ((Ast.NotBooleanExpression)expression).expression;
                     if (notExpression is Ast.ParamBooleanExpression) {
                         Disjunction disjunction = Disjunction.FromAst(notExpression);
-                        var boolParamLiteral = (Compiler.BoolParamLiteral)
+                        var boolParamLiteral = (DNF.BoolParamLiteral)
                             disjunction.conjunctions[0].literals[0];
                         boolParamLiteral.negated = true;
                         return disjunction;
@@ -1111,5 +1110,125 @@ namespace VRCAnimScript {
         }
 
     } // end namespace VRCAnimScript
+
+    namespace CFG {
+
+        public static class StateUtils {
+            public static bool StateHasAnimations(Ast.State state) {
+                if (state is Ast.RegularState) {
+                    var regularState = (Ast.RegularState)state;
+                    return regularState.animation != null;
+                }
+                if (state is Ast.BlendState) {
+                    var blendState = (Ast.BlendState)state;
+                    foreach (Ast.BlendStateKeyframe keyframe in blendState.keyframes) {
+                        if (keyframe.animation != null)
+                            return true;
+                    }
+                    return false;
+                }
+                throw new Exception("Unknown state type");
+            }
+        }
+
+        public class Graph {
+            public List<Node> nodes;
+            public Dictionary<string, int> nodeNames;
+            public List<Edge> edges;
+
+            public Graph(Ast.Layer layer, bool isAction) {
+                nodes = new List<Node>();
+                nodeNames = new Dictionary<string, int>();
+                edges = new List<Edge>();
+
+                // Create nodes.
+                for (int stateIndex = 0; stateIndex < layer.states.Length; stateIndex++) {
+                    Ast.State state = layer.states[stateIndex];
+
+                    var node = new Node();
+                    node.id = stateIndex;
+
+                    if (isAction && StateUtils.StateHasAnimations(state))
+                        node.tracking = 0;
+                    else
+                        node.tracking = (uint)((1 << Node.Parts.Length) - 1);
+
+                    foreach (string part in state.untracked) {
+                        bool found = false;
+                        for (int partIndex = 0; partIndex < Node.Parts.Length; partIndex++) {
+                            if (part == Node.Parts[partIndex]) {
+                                node.tracking &= ~(uint)(1 << partIndex);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if (!found)
+                            throw new Exception("No such untracked part \"" + part + "\"");
+                    }
+
+                    nodes.Add(node);
+                    nodeNames.Add(state.name, stateIndex);
+                }
+
+                // Create edges.
+                for (int stateIndex = 0; stateIndex < layer.states.Length; stateIndex++) {
+                    Ast.State state = layer.states[stateIndex];
+                    foreach (Ast.StateTransition transition in state.transitions) {
+                        if (!nodeNames.ContainsKey(transition.destination)) {
+                            throw new Exception("No such transition destination state \"" +
+                                transition.destination + "\"");
+                        }
+
+                        var edge = new Edge();
+                        edge.from = stateIndex;
+                        edge.to = nodeNames[transition.destination];
+                        edges.Add(edge);
+                    }
+                }
+            }
+
+            public void ComputeTrackingMasks() {
+                foreach (Edge edge in edges) {
+                    Node from = nodes[edge.from], to = nodes[edge.to];
+                    to.trackingMask |= from.tracking ^ to.tracking;
+                }
+            }
+        }
+
+        public class Node {
+            public int id;
+            public uint tracking;
+            public uint trackingMask;
+
+            static string[] gParts;
+
+            public static string[] Parts {
+                get {
+                    if (gParts == null) {
+                        gParts = new string[] {
+                            "Head",
+                            "LeftHand",
+                            "RightHand",
+                            "Hip",
+                            "LeftFoot",
+                            "RightFoot",
+                            "LeftFingers",
+                            "RightFingers",
+                            "Eyes",
+                            "Mouth",
+                        };
+                    }
+                    return gParts;
+                }
+            }
+        }
+
+        public class Edge {
+            public int from;
+            public int to;
+        }
+
+    } // end namespace LayerGraph
 
 }   // end namespace VRCAnimScript

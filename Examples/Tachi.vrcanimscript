@@ -23,7 +23,7 @@ saved param Geddan: bool = false
 saved param Pants: bool = true
 saved param TailSwish: bool = false
 saved param Hoverboard: bool = false
-saved param EyesClosed: float = 1.0
+saved param EyeClosedAmount: float = 0.0
 param GroundDistance: float = 0.0
 
 # Declare your menu items here. The type of the item is inferred based on the type of the parameter
@@ -47,7 +47,7 @@ menuitem Hoverboard
     icon symbol_magic
     controls Hoverboard
 menuitem "Eyes Closed"
-    controls EyesClosed
+    controls EyeClosedAmount
 
 # Your action controller goes here.
 #
@@ -106,6 +106,7 @@ controller fx
                 #  * `rotation` is short for `Transform.localEulerAnglesRaw`.
                 #  * `active` is short for `GameObject.m_IsActive`.
                 #  * `materials` is short for `SkinnedMeshRenderer.m_Materials`.
+                #  * `blendshapes` is short for `SkinnedMeshRenderer.blendShape`.
                 #
                 # Each of these abbreviations can be projected from, so you can write
                 # `Wrench::materials[6] = (Material)myMaterial` and so forth.
@@ -115,13 +116,6 @@ controller fx
             do
                 Wrench::scale = vec3(1, 1, 1)
             goto WrenchOff if !Wrench
-
-        layer Wrench
-            loop
-                if !Wrench
-                    Wrench::scale = vec3(0)
-                else
-                    Wrench::scale = vec3(1)
 
     layer Pants
         initial state PantsOn
@@ -181,10 +175,14 @@ controller fx
             goto HoverboardOff if !(Hoverboard && GroundDistance > 0.5)
 
     layer Eyelids
-        blend Eyelids(EyesClosed)
+        initial state EyesOpen
+            goto EyesPartiallyClosed if EyeClosedAmount > 0
+        blend state EyesPartiallyClosed(EyeClosedAmount)
             at value 0
                 do
-                    Body::SkinnedMeshRenderer.blendShape.EyesClosed = 0
+                    Body::blendshapes."eyes-closed" = 0
             at value 1
                 do
-                    Body::SkinnedMeshRenderer.blendShape.EyesClosed = 1
+                    Body::blendshapes."eyes-closed" = 100
+            untracked Eyes
+            goto EyesOpen if EyeClosedAmount == 0

@@ -214,16 +214,23 @@ namespace VRCAnimScript {
             state.name = ExpectMaybeQuotedString();
 
             var stateTransitions = new List<StateTransition>();
+            var untrackeds = new List<string>();
             while (true) {
                 Animation animation;
+                StateTransition stateTransition;
+                string untracked;
                 if ((animation = ParseAnimation()) != null) {
+                    if (state.animation != null)
+                        throw new Exception("State has multiple animations");
                     state.animation = animation;
                     continue;
                 }
-
-                StateTransition stateTransition;
                 if ((stateTransition = ParseStateTransition()) != null) {
                     stateTransitions.Add(stateTransition);
+                    continue;
+                }
+                if ((untracked = ParseUntracked()) != null) {
+                    untrackeds.Add(untracked);
                     continue;
                 }
 
@@ -231,12 +238,14 @@ namespace VRCAnimScript {
             }
 
             state.transitions = stateTransitions.ToArray();
+            state.untracked = untrackeds.ToArray();
             return state;
         }
 
         BlendState ParseBlendState(bool initial) {
             if (!ConsumeKeyword("blend"))
                 return null;
+            ExpectKeyword("state");
 
             string name = ConsumeMaybeQuotedString();
 
@@ -246,16 +255,22 @@ namespace VRCAnimScript {
 
             var keyframes = new List<BlendStateKeyframe>();
             var transitions = new List<StateTransition>();
+            var untrackeds = new List<string>();
 
             while (true) {
                 BlendStateKeyframe keyframe;
                 StateTransition transition;
+                string untracked;
                 if ((keyframe = ParseBlendStateKeyframe()) != null) {
                     keyframes.Add(keyframe);
                     continue;
                 }
                 if ((transition = ParseStateTransition()) != null) {
                     transitions.Add(transition);
+                    continue;
+                }
+                if ((untracked = ParseUntracked()) != null) {
+                    untrackeds.Add(untracked);
                     continue;
                 }
 
@@ -268,6 +283,7 @@ namespace VRCAnimScript {
             blendState.param = param;
             blendState.keyframes = keyframes.ToArray();
             blendState.transitions = transitions.ToArray();
+            blendState.untracked = untrackeds.ToArray();
             return blendState;
         }
 
@@ -280,6 +296,10 @@ namespace VRCAnimScript {
             keyframe.time = ExpectIntOrFloatLiteral();;
             keyframe.animation = ParseAnimation();
             return keyframe;
+        }
+
+        string ParseUntracked() {
+            return ConsumeKeyword("untracked") ? ExpectMaybeQuotedString() : null;
         }
 
         Animation ParseAnimation() {
@@ -803,6 +823,7 @@ namespace VRCAnimScript {
             public string name;
             public bool initial;
             public StateTransition[] transitions;
+            public string[] untracked;
         }
 
         public class RegularState : State {
