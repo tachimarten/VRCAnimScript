@@ -35,8 +35,9 @@ namespace VRCAnimScript {
             string rootObject = null;
             var menuItems = new List<MenuItem>();
             var allParams = new List<Param>();
-            ControllerSection actionController = null;
-            ControllerSection fxController = null;
+
+            ControllerSection[] controllerSections =
+                new ControllerSection[Materializer.ControllerNames.Length];
 
             while (true) {
                 if (ConsumeKeyword("avatar")) {
@@ -49,40 +50,48 @@ namespace VRCAnimScript {
                 }
 
                 Param param;
+                MenuItem menuItem;
                 if ((param = ParseParam()) != null) {
                     allParams.Add(param);
                     continue;
                 }
-                MenuItem menuItem;
                 if ((menuItem = ParseMenuItem()) != null) {
                     menuItems.Add(menuItem);
                     continue;
                 }
 
                 if (ConsumeKeyword("controller")) {
-                    if (ConsumeKeyword("fx"))
-                        fxController = ParseControllerSection();
-                    else if (ConsumeKeyword("action"))
-                        actionController = ParseControllerSection();
-                    else {
-                        throw new ParseException(
-                            "Expected \"fx\" or \"action\" after \"controller\"", tokenizer);
+                    string controllerType = ExpectAnyKeyword();
+                    bool found = false;
+                    for (int controllerIndex = 0;
+                            controllerIndex < Materializer.ControllerNames.Length;
+                            controllerIndex++) {
+                        if (Materializer.ControllerNames[controllerIndex].ToLower().Equals(
+                                controllerType)) {
+                            controllerSections[controllerIndex] = ParseControllerSection();
+                            found = true;
+                            break;
+                        }
                     }
-                    continue;
+                    if (found)
+                        continue;
+                    throw new ParseException(
+                        "Expected \"base\", \"additive\", \"gesture\", \"action\", or \"fx\" " +
+                        "after \"controller\" but found \"" + controllerType + "\"",
+                        tokenizer);
                 }
                 break;
             }
 
-            Menu mainMenu = new Menu();
-            mainMenu.items = menuItems.ToArray();
+            MenuItem[] mainMenu = menuItems.ToArray();
 
             Root root = new Root();
             root.avatar = avatarName;
             root.rootObject = rootObject;
             root.mainMenu = mainMenu;
             root.allParams = allParams.ToArray();
-            root.fxController = fxController;
-            root.actionController = actionController;
+            root.controllerSections = controllerSections;
+
             return root;
         }
 
@@ -134,13 +143,23 @@ namespace VRCAnimScript {
         }
 
         MenuItem ParseMenuItem() {
+            ParamMenuItem paramMenuItem;
+            SubmenuItem submenuItem;
+            if ((paramMenuItem = ParseParamMenuItem()) != null)
+                return paramMenuItem;
+            if ((submenuItem = ParseSubmenuItem()) != null)
+                return submenuItem;
+            return null;
+        }
+
+        ParamMenuItem ParseParamMenuItem() {
             if (!ConsumeKeyword("menuitem"))
                 return null;
 
-            MenuItem item = new MenuItem();
+            ParamMenuItem item = new ParamMenuItem();
             item.name = ExpectMaybeQuotedString();
 
-            while (true) {
+            while (!ConsumeKeyword("end")) {
                 if (ConsumeKeyword("icon")) {
                     item.icon = ExpectMaybeQuotedString();
                     continue;
@@ -155,14 +174,57 @@ namespace VRCAnimScript {
             return item;
         }
 
+        SubmenuItem ParseSubmenuItem() {
+            if (!ConsumeKeyword("menu"))
+                return null;
+
+            SubmenuItem item = new SubmenuItem();
+            item.name = ExpectMaybeQuotedString();
+
+            var items = new List<MenuItem>();
+            while (!ConsumeKeyword("end")) {
+                if (ConsumeKeyword("icon")) {
+                    item.icon = ExpectMaybeQuotedString();
+                    continue;
+                }
+
+                MenuItem menuItem;
+                if ((menuItem = ParseMenuItem()) != null) {
+                    items.Add(menuItem);
+                    continue;
+                }
+                break;
+            }
+            item.items = items.ToArray();
+
+            return item;
+        }
+
         ControllerSection ParseControllerSection() {
             ControllerSection section = new ControllerSection();
 
             var layers = new List<Layer>();
-            Layer layer;
-            while ((layer = ParseLayer()) != null)
-                layers.Add(layer);
+            string extension = null;
+
+            while (true) {
+                Layer layer;
+                if ((layer = ParseLayer()) != null) {
+                    layers.Add(layer);
+                    continue;
+                }
+                if (ConsumeKeyword("extends")) {
+                    if (extension != null) {
+                        throw new ParseException("Extension already specified for layer",
+                            tokenizer);
+                    }
+                    extension = ExpectMaybeQuotedString();
+                    continue;
+                }
+                break;
+            }
+
             section.layers = layers.ToArray();
+            section.extends = extension;
 
             return section;
         }
@@ -218,7 +280,7 @@ namespace VRCAnimScript {
             while (true) {
                 Animation animation;
                 StateTransition stateTransition;
-                string untracked;
+                string[] untracked;
                 if ((animation = ParseAnimation()) != null) {
                     if (state.animation != null)
                         throw new Exception("State has multiple animations");
@@ -230,7 +292,7 @@ namespace VRCAnimScript {
                     continue;
                 }
                 if ((untracked = ParseUntracked()) != null) {
-                    untrackeds.Add(untracked);
+                    untrackeds.AddRange(untracked);
                     continue;
                 }
 
@@ -260,7 +322,7 @@ namespace VRCAnimScript {
             while (true) {
                 BlendStateKeyframe keyframe;
                 StateTransition transition;
-                string untracked;
+                string[] untracked;
                 if ((keyframe = ParseBlendStateKeyframe()) != null) {
                     keyframes.Add(keyframe);
                     continue;
@@ -270,7 +332,7 @@ namespace VRCAnimScript {
                     continue;
                 }
                 if ((untracked = ParseUntracked()) != null) {
-                    untrackeds.Add(untracked);
+                    untrackeds.AddRange(untracked);
                     continue;
                 }
 
@@ -293,13 +355,20 @@ namespace VRCAnimScript {
             ExpectKeyword("value");
 
             BlendStateKeyframe keyframe = new BlendStateKeyframe();
-            keyframe.time = ExpectIntOrFloatLiteral();;
+            keyframe.time = ExpectIntOrFloatLiteral(); ;
             keyframe.animation = ParseAnimation();
             return keyframe;
         }
 
-        string ParseUntracked() {
-            return ConsumeKeyword("untracked") ? ExpectMaybeQuotedString() : null;
+        string[] ParseUntracked() {
+            if (!ConsumeKeyword("untracked"))
+                return null;
+
+            List<string> untrackedParts = new List<string>();
+            do {
+                untrackedParts.Add(ExpectMaybeQuotedString());
+            } while (ConsumePunctuation(","));
+            return untrackedParts.ToArray();
         }
 
         Animation ParseAnimation() {
@@ -315,6 +384,8 @@ namespace VRCAnimScript {
 
             ExternalAnimation animation = new ExternalAnimation();
             animation.name = ExpectMaybeQuotedString();
+            animation.noBlendShapes = ConsumeKeyword("noblendshapes");
+
             return animation;
         }
 
@@ -660,6 +731,15 @@ namespace VRCAnimScript {
             return paramBooleanExpression;
         }
 
+        private string ExpectAnyKeyword() {
+            if (nextToken is KeywordToken) {
+                string value = ((KeywordToken)nextToken).Value;
+                GetToken();
+                return value;
+            }
+            throw new ParseException("Expected keyword but found " + nextToken, tokenizer);
+        }
+
         private bool ConsumeKeyword(string keyword) {
             if (nextToken is KeywordToken && ((KeywordToken)nextToken).Value == keyword) {
                 GetToken();
@@ -770,184 +850,5 @@ namespace VRCAnimScript {
             return ((PunctuationToken)lookaheadToken).Value == "::";
         }
     }
-
-    namespace Ast {
-
-        public class Root {
-            public string avatar;
-            public string rootObject;
-            public Param[] allParams;
-            public Menu mainMenu;
-            public ControllerSection actionController;
-            public ControllerSection fxController;
-        }
-
-        public abstract class Param {
-            public bool saved;
-            public string name;
-        }
-
-        public class BoolParam : Param {
-            public bool initialValue;
-        }
-
-        public class FloatParam : Param {
-            public double initialValue;
-        }
-
-        public class Menu {
-            public MenuItem[] items;
-
-            public Menu() {
-                items = null;
-            }
-        }
-
-        public class MenuItem {
-            public string name;
-            public string icon;
-            public string param;
-        }
-
-        public class ControllerSection {
-            public Layer[] layers;
-        }
-
-        public class Layer {
-            public string name;
-            public State[] states;
-            public bool additive;
-        }
-
-        public abstract class State {
-            public string name;
-            public bool initial;
-            public StateTransition[] transitions;
-            public string[] untracked;
-        }
-
-        public class RegularState : State {
-            public Animation animation;
-        }
-
-        public class BlendState : State {
-            public string param;
-            public BlendStateKeyframe[] keyframes;
-        }
-
-        public class BlendStateKeyframe {
-            public double time;
-            public Animation animation;
-        }
-
-        public abstract class Animation { }
-
-        public class ExternalAnimation : Animation {
-            public string name;
-        }
-
-        public class InlineAnimation : Animation {
-            public Frame[] frames;
-            public bool loop;
-        }
-
-        public class Frame {
-            public double time;
-            public FrameAction[] actions;
-        }
-
-        public class FrameAction {
-            public string[] objectPath;
-            public PropertyComponent[] property;
-            public Expression expression;
-            public double? prevTangent;
-            public double? nextTangent;
-        }
-
-        public abstract class PropertyComponent { }
-
-        public class NamePropertyComponent : PropertyComponent {
-            public string name;
-        }
-
-        public class NumberPropertyComponent : PropertyComponent {
-            public int value;
-        }
-
-        public abstract class Expression { }
-
-        public class BoolExpression : Expression {
-            public bool value;
-        }
-
-        public class IntExpression : Expression {
-            public int value;
-        }
-
-        public class FloatExpression : Expression {
-            public double value;
-        }
-
-        public class VectorLiteralExpression : Expression {
-            public double[] elements;
-        }
-
-        public class AssetExpression : Expression {
-            public string type;
-            public string name;
-        }
-
-        public class StateTransition {
-            public string destination;
-            public TransitionCondition condition;
-        }
-
-        public abstract class TransitionCondition { }
-
-        public class ParamTransitionCondition : TransitionCondition {
-            public BooleanExpression expression;
-        }
-
-        public class TimeTransitionCondition : TransitionCondition {
-            public double time;
-        }
-
-        public abstract class BooleanExpression { }
-
-        public abstract class SingleTestBooleanExpression : BooleanExpression {
-            public string paramName;
-        }
-
-        public class ParamBooleanExpression : SingleTestBooleanExpression { }
-
-        public class RelationalBooleanExpression : SingleTestBooleanExpression {
-            public RelationalOperator op;
-            public double value;
-        }
-
-        public class AndBooleanExpression : BooleanExpression {
-            public BooleanExpression lhs;
-            public BooleanExpression rhs;
-        }
-
-        public class OrBooleanExpression : BooleanExpression {
-            public BooleanExpression lhs;
-            public BooleanExpression rhs;
-        }
-
-        public class NotBooleanExpression : BooleanExpression {
-            public BooleanExpression expression;
-        }
-
-        public enum RelationalOperator {
-            Equal,
-            NotEqual,
-            Less,
-            Greater,
-            LessEqual,
-            GreaterEqual,
-        }
-
-    }   // end namespace Ast
 
 }   // end namespace VRCAnimScript

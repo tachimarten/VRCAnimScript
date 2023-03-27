@@ -277,9 +277,9 @@ namespace VRCAnimScript {
             LessEqual
         }
 
-    } // end namespace VRCAnimScript
+    } // end namespace DNF
 
-    namespace CFG {
+    namespace TrackingAnalysis {
 
         public static class StateUtils {
             public static bool StateHasAnimations(Ast.State state) {
@@ -299,15 +299,51 @@ namespace VRCAnimScript {
             }
         }
 
-        public class Graph {
-            public List<Node> nodes;
-            public Dictionary<string, int> nodeNames;
-            public List<Edge> edges;
+        public class TrackingAnalysis {
+            public readonly List<string>[] trackingParameters;
 
-            public Graph(Ast.Layer layer, bool isAction) {
+            public TrackingAnalysis() {
+                trackingParameters = new List<string>[Node.Parts.Length];
+                for (int i = 0; i < Node.Parts.Length; i++)
+                    trackingParameters[i] = new List<string>();
+            }
+
+            public void ProcessLayerGraph(string controllerType, LayerGraph layerGraph) {
+                uint untrackedParts = layerGraph.UntrackedParts;
+                for (int partIndex = 0; partIndex < trackingParameters.Length; partIndex++) {
+                    if ((untrackedParts & (1 << partIndex)) != 0) {
+                        trackingParameters[partIndex].Add(GetTrackingParamName(
+                            controllerType,
+                            layerGraph.name,
+                            partIndex));
+                    }
+                }
+            }
+
+            public static string GetTrackingParamName(
+                    string controllerType,
+                    string layerName,
+                    int partIndex) {
+                return "VRCAnimScriptTracking" + controllerType + Node.Parts[partIndex] +
+                    layerName;
+            }
+        }
+
+        public class LayerGraph {
+            public string name;
+            public readonly List<Node> nodes;
+            public readonly Dictionary<string, int> nodeNames;
+            public readonly List<Edge> edges;
+
+            public LayerGraph() {
+                name = null;
                 nodes = new List<Node>();
                 nodeNames = new Dictionary<string, int>();
                 edges = new List<Edge>();
+            }
+
+            public void PopulateGraph(Ast.Layer layer, bool isAction) {
+                name = layer.name;
 
                 // Create nodes.
                 for (int stateIndex = 0; stateIndex < layer.states.Length; stateIndex++) {
@@ -362,6 +398,15 @@ namespace VRCAnimScript {
                     to.trackingMask |= from.tracking ^ to.tracking;
                 }
             }
+
+            public uint UntrackedParts {
+                get {
+                    uint untrackedParts = 0;
+                    foreach (Node node in nodes)
+                        untrackedParts |= (uint)(~node.tracking & ((1 << Node.Parts.Length) - 1));
+                    return untrackedParts;
+                }
+            }
         }
 
         public class Node {
@@ -397,9 +442,6 @@ namespace VRCAnimScript {
             public int to;
         }
 
-    } // end namespace CFG
-
-
-
+    } // end namespace TrackingAnalysis
 
 } // end namespace VRCAnimScript

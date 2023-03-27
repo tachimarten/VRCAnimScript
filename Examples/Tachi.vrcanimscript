@@ -1,22 +1,9 @@
 # Tachi.vrcanimscript
-#
-# This is a VRC animation script. It lets you create VRChat parameters, menus, animation
-# controllers, and simple animations in one compact text file.
-#
-# Whitespace (including newlines) is insignificant in this file, and comments begin with `#`.
-# Indent as you please. Strings are delimited with double quotes; in most cases you can leave off
-# the double quotes if the string is just one word (alphanumeric characters plus underscore).
 
-# Name of your avatar. This can be any valid identifier (no spaces) and is only used for internal
-# names.
 avatar Tachi
 
-# The Unity name of your root object. This is the one containing the avatar descriptor.
 rootobject "jacob-ovrick-tachi-ik (1)"
 
-# Declare your parameters here. Right now only booleans and floats are supported. The syntax is:
-#
-#   saved? param NAME: TYPE = EXPRESSION
 saved param Wrench: bool = false
 saved param FloatAndSplat: bool = false
 saved param Geddan: bool = false
@@ -26,90 +13,65 @@ saved param Hoverboard: bool = false
 saved param EyeClosedAmount: float = 0.0
 param GroundDistance: float = 0.0
 
-# Declare your menu items here. The type of the item is inferred based on the type of the parameter
-# being controlled. Submenus are currently unsupported.
-menuitem Wrench
-    icon item_sword
-    controls Wrench
-menuitem "ゲッダン"
-    icon person_dance
-    controls Geddan
-menuitem "Float & Splat"
-    icon hand_waving
-    controls FloatAndSplat
 menuitem Pants
     icon symbol_heart
     controls Pants
+end
 menuitem TailSwish
     icon symbol_paw
     controls TailSwish
+end
+menuitem "Eyes Closed"
+    controls EyeClosedAmount
+end
 menuitem Hoverboard
     icon symbol_magic
     controls Hoverboard
-menuitem "Eyes Closed"
-    controls EyeClosedAmount
+end
+menu Emotes
+    menuitem "ゲッダン"
+        icon person_dance
+        controls Geddan
+    end
+    menuitem "Float & Splat"
+        icon hand_waving
+        controls FloatAndSplat
+    end
+end
+menu Broken
+    menuitem Wrench
+        icon item_sword
+        controls Wrench
+    end
+end
 
-# Your action controller goes here.
-#
-# VRC playable layer control and VRC animator tracking control behaviors are automatically added
-# as necessary.
+controller base
+    extends vrc_AvatarV3LocomotionLayer
+    layer Hoverboard
+        initial state HoverboardOff
+            play "Armature|HoverboardOff (1)" noblendshapes
+            goto HoverboardOn if Hoverboard && GroundDistance < 0.5
+        state HoverboardOn
+            play "Armature|Hoverboarding" noblendshapes
+            untracked LeftFoot, RightFoot, Hip
+            goto HoverboardOff if !(Hoverboard && GroundDistance < 0.5)
+
 controller action
-    # An animation layer.
     layer Action
-        # There must be one initial state. The names don't matter; they're only used for
-        # identification.
         initial state Idle
-            # These are transitions with conditions.
             goto Geddan if Geddan
             goto FloatAndSplat if FloatAndSplat
         state Geddan
-            # `play` plays a `.anim` asset: in this case, `BaileGETDOWN.anim`.
             play BaileGETDOWN
-            # Negation of booleans can be done with `!`. This one goes to Idle if Geddan is false.
             goto Idle if !Geddan
         state FloatAndSplat
             play "Float & Splat"
             goto Idle if !FloatAndSplat
 
-# Your FX controller goes here.
 controller fx
     layer Wrench
         initial state WrenchOff
-            # `do` specifies an "inline animation". These are simple one-off animations that
-            # VRCAnimScript automatically generates as necessary. They're useful when you don't
-            # want to bother making a whole `.anim` file in Unity.
             do
-                # The syntax here is
-                #
-                #    GAMEOBJECT::COMPONENT.PROPERTY = EXPRESSION
-                #
-                # * GAMEOBJECT is the Unity name of the game object, as a string. It can be
-                #   anywhere in the hierarchy below your root object.
-                # * COMPONENT is the type of the component to be animated as a string, such as
-                #   Transform or SkinnedMeshRenderer.
-                # * PROPERTY is the path of the property to be animated on the component. For
-                #   example, `blendShape.MyBlendShape`.
-                # * EXPRESSION is the value to animate to.
-                #
-                # Valid expressions include numbers (ints and floats are internally the same thing)
-                # and 2/3/4-element vectors, notated as `vecN(NUMBER, NUMBER, ...)`. Internally,
-                # vectors turn into multiple float properties, one for each element of the vector.
-                # For example, `Wrench::Transform.m_LocalScale = vec3(0, 0, 0)` is the same as:
-                #
-                #   Wrench::Transform.m_LocalScale.x = 0
-                #   Wrench::Transform.m_LocalScale.y = 0
-                #   Wrench::Transform.m_LocalScale.z = 0
-                #
-                # There are abbreviations you can use in place of `COMPONENT.PROPERTY`:
-                #
-                #  * `scale` is short for `Transform.m_LocalScale`.
-                #  * `rotation` is short for `Transform.localEulerAnglesRaw`.
-                #  * `active` is short for `GameObject.m_IsActive`.
-                #  * `materials` is short for `SkinnedMeshRenderer.m_Materials`.
-                #  * `blendshapes` is short for `SkinnedMeshRenderer.blendShape`.
-                #
-                # Each of these abbreviations can be projected from, so you can write
-                # `Wrench::materials[6] = (Material)myMaterial` and so forth.
                 Wrench::scale = vec3(0, 0, 0)
             goto WrenchOn if Wrench
         state WrenchOn
@@ -120,9 +82,6 @@ controller fx
     layer Pants
         initial state PantsOn
             do
-                # If you're familiar with Unity animation paths, you may be expecting to write this
-                # as `m_Materials.Array.data[6]`. In VRCAnimScript, the `.Array.data` is implied, so
-                # you can just write `m_Materials[6]`.
                 Body::materials[6] = (Material)TachiHidden
                 Body::materials[7] = (Material)"T_Tachi_ClothesHair.004"
             goto PantsOff if !Pants
@@ -167,12 +126,12 @@ controller fx
     layer Hoverboard
         initial state HoverboardOff
             do
-                Hoverboard::active = false
-            goto HoverboardOn if Hoverboard && GroundDistance > 0.5
+                Hoverboard::scale = vec3(0, 0, 0)
+            goto HoverboardOn if Hoverboard && GroundDistance < 0.5
         state HoverboardOn
             do
-                Hoverboard::active = true
-            goto HoverboardOff if !(Hoverboard && GroundDistance > 0.5)
+                Hoverboard::scale = vec3(1, 1, 1)
+            goto HoverboardOff if !(Hoverboard && GroundDistance < 0.5)
 
     layer Eyelids
         initial state EyesOpen
